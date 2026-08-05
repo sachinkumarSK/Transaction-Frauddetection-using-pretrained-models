@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IOB Pay</title>
+<!-- React + Babel via CDN (needs internet on first load). No build step. -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  :root{
+    --brand:#0b57a4; --brand2:#1673c4; --ink:#0f1b2d; --muted:#6b7a90;
+    --line:#e4e9f0; --surface:#f5f8fc; --ok:#12a150; --warn:#d98a00; --bad:#e5484d;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  body{ font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink);
+        background:linear-gradient(160deg,#eef2f8,#d8e2f0); min-height:100vh;
+        display:flex; align-items:center; justify-content:center; padding:24px; }
+  .phone{ width:420px; max-width:100%; background:#fff; border-radius:28px; overflow:hidden;
+          box-shadow:0 24px 70px rgba(15,32,60,.30); }
+
+  /* Header */
+  .hdr{ background:linear-gradient(135deg,var(--brand),var(--brand2)); color:#fff; padding:22px 22px 20px; }
+  .brandrow{ display:flex; align-items:center; justify-content:space-between; }
+  .brand{ font-size:22px; font-weight:800; letter-spacing:.3px; display:flex; align-items:center; gap:9px; }
+  .logo{ width:32px; height:32px; border-radius:9px; background:rgba(255,255,255,.18);
+         display:flex; align-items:center; justify-content:center; font-size:17px; }
+  .chip{ font-size:11px; font-weight:700; background:rgba(255,255,255,.16); padding:6px 11px; border-radius:20px; }
+  .acct{ background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.15); border-radius:14px;
+         padding:12px 15px; margin-top:16px; display:flex; justify-content:space-between; align-items:center; }
+  .acct .lbl{ font-size:11px; opacity:.82; } .acct .val{ font-size:15px; font-weight:700; margin-top:3px; }
+
+  /* Form */
+  .body{ padding:20px 22px 6px; }
+  label{ display:block; font-size:11.5px; font-weight:700; color:var(--muted); margin:16px 0 7px;
+         text-transform:uppercase; letter-spacing:.5px; }
+  input,select{ width:100%; padding:12px 14px; border:1.5px solid var(--line); border-radius:12px;
+                font-size:15px; background:#fff; color:var(--ink); transition:border .15s,box-shadow .15s; }
+  input:focus,select:focus{ outline:none; border-color:var(--brand); box-shadow:0 0 0 3px rgba(11,87,164,.12); }
+  .amt-wrap{ display:flex; align-items:center; border:1.5px solid var(--line); border-radius:14px;
+             padding:4px 14px; background:var(--surface); }
+  .amt-wrap:focus-within{ border-color:var(--brand); box-shadow:0 0 0 3px rgba(11,87,164,.12); }
+  .amt-wrap .cur{ font-size:26px; font-weight:800; color:var(--muted); margin-right:6px; }
+  .amt{ border:none !important; background:transparent !important; font-size:28px; font-weight:800;
+        padding:8px 0 !important; box-shadow:none !important; }
+
+  .seg{ display:flex; gap:6px; background:var(--surface); padding:5px; border-radius:14px; border:1px solid var(--line); }
+  .seg button{ flex:1; padding:10px 6px; border-radius:10px; border:none; background:transparent;
+               font-size:12.5px; font-weight:700; cursor:pointer; color:var(--muted); transition:.15s; }
+  .seg button.on{ background:#fff; color:var(--brand); box-shadow:0 2px 6px rgba(15,32,60,.12); }
+
+  /* Advanced */
+  .adv{ font-size:12.5px; color:var(--brand); cursor:pointer; margin:18px 0 4px; font-weight:700; user-select:none; }
+  .advbox{ background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:4px 15px 12px; margin-top:6px; }
+  .advhd{ font-weight:700; color:var(--brand); margin:14px 0 2px; font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+  .arow{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 0;
+         font-size:13.5px; color:#33455c; border-bottom:1px solid rgba(15,32,60,.05); }
+  .arow:last-child{ border-bottom:none; }
+  .arow input[type=number],.arow input[type=text]{ width:118px; padding:8px 10px; font-size:13px; }
+
+  /* iOS-style toggle */
+  .switch{ position:relative; display:inline-block; width:44px; height:26px; flex:none; }
+  .switch input{ opacity:0; width:0; height:0; }
+  .slider{ position:absolute; cursor:pointer; inset:0; background:#cbd5e1; border-radius:26px; transition:.2s; }
+  .slider:before{ content:""; position:absolute; height:20px; width:20px; left:3px; top:3px; background:#fff;
+                  border-radius:50%; transition:.2s; box-shadow:0 1px 3px rgba(0,0,0,.2); }
+  .switch input:checked + .slider{ background:var(--brand); }
+  .switch input:checked + .slider:before{ transform:translateX(18px); }
+
+  /* Buttons */
+  .pay{ width:100%; margin:20px 0 8px; padding:15px; border:none; border-radius:14px; cursor:pointer;
+        background:linear-gradient(135deg,#0f9d58,#12b866); color:#fff; font-size:16px; font-weight:800;
+        box-shadow:0 8px 20px rgba(16,165,92,.3); transition:transform .1s,box-shadow .2s; }
+  .pay:hover:not(:disabled){ box-shadow:0 10px 26px rgba(16,165,92,.42); }
+  .pay:active:not(:disabled){ transform:translateY(1px); }
+  .pay:disabled{ opacity:.6; cursor:default; }
+  .sim{ width:100%; margin:2px 0 4px; padding:13px; border:1.5px solid var(--brand); border-radius:14px;
+        cursor:pointer; background:#fff; color:var(--brand); font-size:14px; font-weight:700; transition:.15s; }
+  .sim:hover:not(:disabled){ background:var(--surface); }
+  .sim:disabled{ opacity:.6; }
+  .simmsg{ text-align:center; font-size:13px; color:var(--ok); font-weight:700; margin-top:8px; }
+  .err{ color:var(--bad); font-size:13px; margin-top:12px; background:#fdecec; padding:10px 12px; border-radius:10px; }
+  .note{ text-align:center; font-size:11px; color:#98a6ba; padding:14px 22px 20px; line-height:1.6;
+         border-top:1px solid var(--line); margin-top:8px; }
+
+  /* Result */
+  .result{ padding:34px 26px 18px; text-align:center; }
+  .badge{ width:82px; height:82px; border-radius:50%; margin:0 auto 16px; display:flex;
+          align-items:center; justify-content:center; font-size:42px; }
+  .b-ok{ background:#dcf5e8; color:var(--ok); } .b-mfa{ background:#fdf0d8; color:var(--warn); }
+  .b-block{ background:#fbe0e0; color:var(--bad); }
+  .r-title{ font-size:22px; font-weight:800; }
+  .r-sub{ font-size:14px; color:var(--muted); margin-top:6px; line-height:1.5; }
+  .r-amt{ font-size:32px; font-weight:800; margin:16px 0 2px; }
+  .pill{ display:inline-block; padding:6px 14px; border-radius:20px; font-size:12px; font-weight:800;
+         margin-top:12px; letter-spacing:.3px; }
+  .reasons{ text-align:left; background:var(--surface); border:1px solid var(--line); border-radius:14px;
+            padding:14px 16px; margin-top:18px; font-size:13px; color:#33455c; }
+  .reasons b{ color:var(--ink); } .reasons li{ margin:6px 0 6px 18px; }
+  .otp{ letter-spacing:10px; text-align:center; font-size:22px; font-weight:800; margin-top:8px; }
+  .linkbtn{ display:inline-block; margin-top:20px; color:var(--brand); font-weight:700; cursor:pointer; font-size:14px; }
+  .spin{ display:inline-block; width:18px; height:18px; border:3px solid rgba(255,255,255,.5);
+         border-top-color:#fff; border-radius:50%; animation:s .7s linear infinite; vertical-align:-3px; margin-right:8px; }
+  @keyframes s{ to{ transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState } = React;
+
+// Device/session risk profiles → telemetry bundles
+const PROFILES = {
+  Safe:        { new_device:false, vpn_detected:false, emulator_detected:false, rooted_device:false,
+                 paste_detected:false, failed_otp_count:0, device_trust_score:88, session_duration_sec:40,
+                 typing_speed_anomaly:0.1, geo_distance_km:5, is_international:false },
+  Suspicious:  { new_device:true, vpn_detected:true, emulator_detected:false, rooted_device:false,
+                 paste_detected:false, failed_otp_count:1, device_trust_score:50, session_duration_sec:18,
+                 typing_speed_anomaly:0.4, geo_distance_km:150, is_international:false },
+  Compromised: { new_device:true, vpn_detected:true, emulator_detected:true, rooted_device:true,
+                 paste_detected:true, failed_otp_count:3, device_trust_score:15, session_duration_sec:4,
+                 typing_speed_anomaly:0.9, geo_distance_km:2500, is_international:true },
+};
+
+const BENEFICIARIES = [
+  { key:"trusted", name:"Priya Sharma", sub:"HDFC ••1234 · saved payee", id:"BENF-TRUSTED-01", risk:8, isNew:false },
+  { key:"new",     name:"QuickMart Online", sub:"first-time payee", id:null, risk:20, isNew:true },
+  { key:"mule",    name:"Unknown A/C ••9021", sub:"⚠ flagged on fraud ledger", id:"BENF-MULE-001", risk:60, isNew:true },
+];
+
+const DEC = {
+  APPROVE:      { cls:"b-ok",    icon:"✓", title:"Payment Successful", sub:"Your transfer has been completed.", color:"#12a150", bg:"#dcf5e8", tag:"APPROVED" },
+  STEP_UP_MFA:  { cls:"b-mfa",   icon:"🔒", title:"Verify to continue", sub:"This payment looks risky, so we need an extra check. Enter an OTP to continue.", color:"#d98a00", bg:"#fdf0d8", tag:"RISKY — VERIFY" },
+  BLOCK:        { cls:"b-block", icon:"⛔", title:"Payment Blocked", sub:"For your safety, we've stopped this transfer. Contact your bank if you believe this is a mistake.", color:"#e5484d", bg:"#fbe0e0", tag:"BLOCKED" },
+};
+
+// Labelled inputs for the manual/advanced panel
+function AdvNum({ label, value, onChange, step }) {
+  return <div className="arow"><span>{label}</span>
+    <input type="number" step={step || "1"} value={value}
+           onChange={e => onChange(e.target.value === '' ? 0 : Number(e.target.value))} /></div>;
+}
+function AdvChk({ label, value, onChange }) {
+  return <div className="arow"><span>{label}</span>
+    <label className="switch"><input type="checkbox" checked={value} onChange={e => onChange(e.target.checked)} />
+      <span className="slider"></span></label></div>;
+}
+function AdvText({ label, value, onChange }) {
+  return <div className="arow"><span>{label}</span>
+    <input type="text" value={value} onChange={e => onChange(e.target.value)} /></div>;
+}
+
+function Header({ chipOnly }) {
+  return (
+    <div className="hdr">
+      <div className="brandrow">
+        <div className="brand"><span className="logo">🏦</span> IOB Pay</div>
+        <span className="chip">🔒 PayGuard</span>
+      </div>
+      {!chipOnly &&
+        <div className="acct">
+          <div><div className="lbl">From account</div><div className="val">Savings ••4821</div></div>
+          <div style={{textAlign:'right'}}><div className="lbl">Balance</div><div className="val">₹1,84,500</div></div>
+        </div>}
+    </div>
+  );
+}
+
+function App() {
+  const [amount, setAmount] = useState(2500);
+  const [benef, setBenef] = useState("trusted");
+  const [profile, setProfile] = useState("Safe");
+  const [cust, setCust] = useState("IOBPAY-USER-01");
+  const [showAdv, setShowAdv] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [otp, setOtp] = useState("");
+  const [verified, setVerified] = useState(false);
+  const [err, setErr] = useState(null);
+  const [simming, setSimming] = useState(false);
+  const [simMsg, setSimMsg] = useState(null);
+  const [adv, setAdv] = useState({
+    hour: new Date().getHours(), avg_txn_amount: 20000,
+    beneficiary_risk_score: 8, beneficiary_added_recently: false, account_age_days: 400,
+    shared_device_accounts: 1, beneficiary_id_override: "", ...PROFILES.Safe,
+  });
+  const upd = (k, v) => setAdv(a => ({ ...a, [k]: v }));
+
+  const b = BENEFICIARIES.find(x => x.key === benef);
+
+  async function pay() {
+    setErr(null); setLoading(true); setResult(null); setVerified(false); setOtp("");
+    const payload = {
+      amount: Number(amount), customer_id: cust, channel: "IOB Pay",
+      beneficiary_id: (adv.beneficiary_id_override || b.id || ("BENF-NEW-" + Math.floor(1000 + Math.random()*9000))),
+      beneficiary_name: adv.beneficiary_id_override ? "Custom payee" : b.name,
+      device_hash: "DEV-IOBPAY-" + cust,
+      ...adv,
+    };
+    delete payload.beneficiary_id_override;
+    try {
+      const r = await fetch("/score", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+      if (!r.ok) throw new Error("API " + r.status);
+      setResult(await r.json());
+    } catch (e) {
+      setErr("Could not reach the fraud engine. Is the API running? (" + e.message + ")");
+    } finally { setLoading(false); }
+  }
+
+  async function simulate() {
+    setSimming(true); setSimMsg(null);
+    const pick = a => a[Math.floor(Math.random() * a.length)];
+    const names = ["Amazon IN", "Flipkart", "Swiggy", "Zomato", "BigBasket", "Reliance", "Myntra"];
+    let ok = 0;
+    for (let i = 0; i < 10; i++) {
+      const fraud = Math.random() > 0.6;
+      const prof = fraud ? (Math.random() > 0.5 ? PROFILES.Compromised : PROFILES.Suspicious) : PROFILES.Safe;
+      const toMule = fraud && Math.random() > 0.6;
+      const payload = {
+        amount: fraud ? pick([65000, 120000, 250000, 450000]) : pick([800, 1500, 3000, 6000, 12000]),
+        hour: Math.floor(Math.random() * 24), customer_id: "SIM-USER-" + (1 + Math.floor(Math.random() * 4)),
+        channel: "IOB Pay",
+        beneficiary_id: toMule ? "BENF-MULE-001" : "BENF-SIM-" + Math.floor(1000 + Math.random() * 9000),
+        beneficiary_name: toMule ? "Unknown A/C ••9021" : pick(names),
+        device_hash: "DEV-SIM-" + Math.floor(100 + Math.random() * 900),
+        avg_txn_amount: 20000, beneficiary_risk_score: fraud ? pick([55, 70, 85]) : pick([8, 15, 20]),
+        beneficiary_added_recently: fraud, account_age_days: fraud ? pick([2, 7, 20]) : pick([120, 365, 700]),
+        ...prof,
+      };
+      try { const r = await fetch("/score", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) }); if (r.ok) ok++; } catch (e) {}
+    }
+    setSimMsg("Simulated " + ok + " payments — open the analyst dashboard to investigate them.");
+    setSimming(false);
+  }
+
+  function reset() { setResult(null); setErr(null); setVerified(false); setOtp(""); }
+
+  // ── Result screen ──
+  if (result) {
+    const d = DEC[result.decision] || DEC.APPROVE;
+    const showSuccess = result.decision === "APPROVE" || verified;
+    const view = showSuccess ? DEC.APPROVE : d;
+    const ledgerReasons = (result.reasons || []).filter(x =>
+      /override|ledger|intel|flagged|First-time|fingerprint/i.test(x)).slice(0,3);
+    const topReasons = (result.reasons || []).slice(0,3);
+    return (
+      <div className="phone">
+        <Header chipOnly />
+        <div className="result">
+          <div className={"badge " + view.cls}>{view.icon}</div>
+          <div className="r-title">{showSuccess ? "Payment Successful" : view.title}</div>
+          <div className="r-amt" style={{color: view.color}}>₹{Number(amount).toLocaleString('en-IN')}</div>
+          <div className="r-sub">to <b>{b.name}</b></div>
+          <span className="pill" style={{background: view.bg, color: view.color}}>
+            {showSuccess ? "APPROVED" : (DEC[result.decision]||{}).tag} · Risk {result.tti}/100
+          </span>
+
+          {result.decision === "STEP_UP_MFA" && !verified &&
+            <div style={{marginTop:20}}>
+              <div className="r-sub">{DEC.STEP_UP_MFA.sub}</div>
+              <label>Enter OTP (any 6 digits — simulated)</label>
+              <input className="otp" maxLength="6" value={otp}
+                     onChange={e=>setOtp(e.target.value.replace(/\D/g,''))} placeholder="••••••" />
+              <button className="pay" disabled={otp.length<6} onClick={()=>setVerified(true)}>Verify & Pay</button>
+            </div>}
+
+          {result.decision === "BLOCK" &&
+            <div className="reasons">
+              <b>Why was this blocked?</b>
+              <ul>{(ledgerReasons.length?ledgerReasons:topReasons).map((x,i)=><li key={i}>{x}</li>)}</ul>
+            </div>}
+
+          <div className="linkbtn" onClick={reset}>← Make another payment</div>
+        </div>
+        <div className="note">⚠️ Simulation only — no real money is transferred. This screen sends the
+          transaction details to the PayGuard engine and shows its decision.</div>
+      </div>
+    );
+  }
+
+  // ── Payment form ──
+  return (
+    <div className="phone">
+      <Header />
+      <div className="body">
+        <label>Amount</label>
+        <div className="amt-wrap"><span className="cur">₹</span>
+          <input className="amt" type="number" value={amount} onChange={e=>setAmount(e.target.value)} /></div>
+
+        <label>Pay to</label>
+        <select value={benef} onChange={e=>{
+            const k=e.target.value; setBenef(k);
+            const bb=BENEFICIARIES.find(x=>x.key===k);
+            setAdv(a=>({...a, beneficiary_risk_score:bb.risk, beneficiary_added_recently:bb.isNew,
+                        account_age_days:bb.isNew?20:400}));
+          }}>
+          {BENEFICIARIES.map(x=><option key={x.key} value={x.key}>{x.name} — {x.sub}</option>)}
+        </select>
+
+        <label>Quick device / session preset</label>
+        <div className="seg">
+          {Object.keys(PROFILES).map(p=>
+            <button key={p} className={profile===p?"on":""}
+                    onClick={()=>{setProfile(p); setAdv(a=>({...a, ...PROFILES[p]}));}}>{p}</button>)}
+        </div>
+
+        <div className="adv" onClick={()=>setShowAdv(!showAdv)}>{showAdv?"▾":"▸"} Advanced — manual controls (all signals)</div>
+        {showAdv &&
+          <div className="advbox">
+            <AdvText label="Your customer ID" value={cust} onChange={setCust} />
+            <AdvText label="Custom beneficiary ID" value={adv.beneficiary_id_override} onChange={v=>upd('beneficiary_id_override',v)} />
+
+            <div className="advhd">Transaction</div>
+            <AdvNum label="Hour of day (0–23)" value={adv.hour} onChange={v=>upd('hour',v)} />
+            <AdvNum label="Customer avg spend (₹)" value={adv.avg_txn_amount} onChange={v=>upd('avg_txn_amount',v)} />
+
+            <div className="advhd">Device</div>
+            <AdvChk label="New / unknown device" value={adv.new_device} onChange={v=>upd('new_device',v)} />
+            <AdvChk label="Rooted / jailbroken" value={adv.rooted_device} onChange={v=>upd('rooted_device',v)} />
+            <AdvChk label="Emulator" value={adv.emulator_detected} onChange={v=>upd('emulator_detected',v)} />
+            <AdvNum label="Device trust (0–100)" value={adv.device_trust_score} onChange={v=>upd('device_trust_score',v)} />
+
+            <div className="advhd">Location</div>
+            <AdvChk label="VPN / proxy" value={adv.vpn_detected} onChange={v=>upd('vpn_detected',v)} />
+            <AdvChk label="International" value={adv.is_international} onChange={v=>upd('is_international',v)} />
+            <AdvNum label="Distance from last (km)" value={adv.geo_distance_km} onChange={v=>upd('geo_distance_km',v)} />
+
+            <div className="advhd">Session</div>
+            <AdvNum label="Time on page (s)" value={adv.session_duration_sec} onChange={v=>upd('session_duration_sec',v)} />
+            <AdvChk label="Account number pasted" value={adv.paste_detected} onChange={v=>upd('paste_detected',v)} />
+            <AdvNum label="Failed OTPs" value={adv.failed_otp_count} onChange={v=>upd('failed_otp_count',v)} />
+            <AdvChk label="New beneficiary" value={adv.beneficiary_added_recently} onChange={v=>upd('beneficiary_added_recently',v)} />
+            <AdvNum label="Typing anomaly (0–1)" step="0.1" value={adv.typing_speed_anomaly} onChange={v=>upd('typing_speed_anomaly',v)} />
+
+            <div className="advhd">Relationship</div>
+            <AdvNum label="Accounts sharing device" value={adv.shared_device_accounts} onChange={v=>upd('shared_device_accounts',v)} />
+            <AdvNum label="Beneficiary risk (0–100)" value={adv.beneficiary_risk_score} onChange={v=>upd('beneficiary_risk_score',v)} />
+            <AdvNum label="Account age (days)" value={adv.account_age_days} onChange={v=>upd('account_age_days',v)} />
+
+            <div style={{fontSize:11,color:'#8794a8',marginTop:10}}>
+              The preset buttons and payee dropdown prefill these. Edit any value for a fully custom payment.</div>
+          </div>}
+
+        {err && <div className="err">{err}</div>}
+        <button className="pay" onClick={pay} disabled={loading || simming}>
+          {loading ? <span><span className="spin"></span>Checking security…</span> : "Pay ₹" + Number(amount).toLocaleString('en-IN')}
+        </button>
+        <button className="sim" onClick={simulate} disabled={loading || simming}>
+          {simming ? <span><span className="spin" style={{borderTopColor:'#0b57a4'}}></span>Simulating…</span> : "⚡ Simulate 10 random payments"}
+        </button>
+        {simMsg && <div className="simmsg">{simMsg}</div>}
+      </div>
+      <div className="note">⚠️ Simulation only — no real money is transferred.<br/>
+        Tip: pay <b>Unknown A/C ••9021</b> — it's on the fraud ledger and will be blocked even on a "Safe" preset.</div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

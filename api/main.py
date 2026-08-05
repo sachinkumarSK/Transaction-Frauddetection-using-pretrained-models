@@ -13,18 +13,23 @@ import numpy as np
 import joblib
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 # Add parent to path for trust engine import
 sys.path.insert(0, str(Path(__file__).parent.parent / "models"))
 from trust_engine import DynamicTrustEngine
+from reputation import ReputationStore
+from db import PayGuardDB
 
-app = FastAPI(title="Continuous Trust Intelligence API", version="2.0.0",
-              description="Real-time fraud prevention with Dynamic Trust Scoring + LightGBM + SHAP")
+app = FastAPI(title="PayGuard API", version="2.0.0",
+              description="Real-time payment fraud protection — Risk Score (6-check blend) + LightGBM + SHAP")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 MODEL_DIR = Path(__file__).parent.parent / "models"
-trust_engine = DynamicTrustEngine()
+db = PayGuardDB()                                  # SQLite persistence (data/payguard.db)
+trust_engine = DynamicTrustEngine(db=db)
+reputation_store = ReputationStore(db=db)
 
 # Global model references
 lgb_model = iso_model = scaler = feature_cols = anomaly_features = None
@@ -49,6 +54,15 @@ async def load_models():
             print("[OK] SHAP explainer loaded")
         except: pass
         print(f"[OK] Models loaded ({len(feature_cols)} features, threshold={optimal_threshold:.3f})")
+        # Restore live feed + running stats from the database.
+        try:
+            for r in reversed(db.recent_transactions(100)):  # oldest→newest so newest ends leftmost
+                txn_feed.appendleft(r)
+            session_stats.update(db.decision_counts())
+            print(f"[OK] Restored {len(txn_feed)} transactions from DB "
+                  f"({len(trust_engine.customers)} customers, {len(reputation_store.entities)} ledger entities)")
+        except Exception as e:
+            print("[WARN] DB restore:", e)
     except FileNotFoundError:
         print("[WARN] Models not found - run: python models/train_pipeline.py")
         # Try legacy models
@@ -63,12 +77,19 @@ async def load_models():
 session_stats = {"total": 0, "block": 0, "verify": 0, "approve": 0, "start": time.time()}
 blockchain_log = deque(maxlen=100)
 governance_log = deque(maxlen=200)
+txn_feed = deque(maxlen=100)   # live feed of recent scored txns (for the dashboard)
 
 # ── Schemas ──
 class Transaction(BaseModel):
     amount: float = Field(..., gt=0, example=15000.0)
     hour: int = Field(..., ge=0, le=23, example=14)
     customer_id: Optional[str] = Field("anonymous", example="CUST-001")
+    # Reputation-ledger identifiers (looked up in the reputation store)
+    beneficiary_id: Optional[str] = Field(None, example="BENF-9021")
+    device_hash: Optional[str] = Field(None, example="DEV-3f9a")
+    # Origin channel (e.g. "IOB Pay", "api") — shown in the dashboard live feed
+    channel: Optional[str] = Field("api", example="IOB Pay")
+    beneficiary_name: Optional[str] = Field(None, example="Priya Sharma")
     # Behavioural
     avg_txn_amount: Optional[float] = Field(5000, example=5000)
     txn_frequency: Optional[float] = Field(1.0, example=1.5)
@@ -108,6 +129,8 @@ class Transaction(BaseModel):
 class ScoreResponse(BaseModel):
     transaction_id: str
     risk_score: int
+    tti: float                      # Transaction Trust Index (PRD §12)
+    tti_breakdown: List[dict]       # the 6 named factors + weights + contributions
     decision: str
     fraud_probability: float
     anomaly_score: float
@@ -246,10 +269,145 @@ def rule_based_score(tx: Transaction):
     if (tx.geo_distance_km or 0) > 500: score += 15; reasons.append("Impossible travel")
     return min(score, 100) / 100, min(score, 100) / 100, reasons, []
 
+# ── Transaction Trust Index (PRD §12) ──
+# The TTI is a single 0-100 index that combines the six signals named in the
+# PRD. Each factor below is expressed as a RISK contribution (0 = fully trusted,
+# 100 = maximal risk), so a HIGH TTI means a HIGH-risk transaction — matching the
+# PRD decision rule: TTI Low → Approve, Medium → Step-up MFA, High → Block.
+TTI_WEIGHTS = {
+    "Transaction Risk (LightGBM+IsoForest)": 0.35,
+    "Device Trust":                          0.15,
+    "Historical Behaviour":                  0.15,
+    "Beneficiary Reputation":                0.15,
+    "Authentication History":                0.10,
+    "Blockchain Threat Intelligence":        0.10,
+}
+
+def blockchain_intel_lookup(tx: Transaction):
+    """Blockchain / threat-intel factor for the TTI.
+
+    Reads the permissioned reputation ledger for the beneficiary and device and
+    returns (risk, hits) where risk is the WORST reputation found across the two
+    entities and hits lists the ledger records that matched. Phase 3 wires the
+    write side (report_fraud) so confirmed fraud raises these scores over time.
+    """
+    risk = 8.0   # baseline "no adverse intelligence found"
+    hits = []
+    for eid, kind in [(tx.beneficiary_id, "beneficiary"), (tx.device_hash, "device")]:
+        if not eid:
+            continue
+        rec = reputation_store.lookup(eid, kind)
+        if rec["known"] and rec["risk"] > 0:
+            risk = max(risk, rec["risk"])
+            hits.append(rec)
+    return risk, hits
+
+def compute_tti(tx: Transaction, fraud_prob: float, anomaly: float, trust_info: dict, reasons: list = None):
+    """Compute the Transaction Trust Index and its per-factor breakdown.
+
+    Returns (tti_value, breakdown) where breakdown is a list of
+    {factor, score, weight, contribution} dicts — one per PRD factor.
+    """
+    # 1. Transaction risk — the AI Risk Engine (LightGBM + Isolation Forest)
+    transaction_risk = min((fraud_prob * 0.7 + anomaly * 0.3) * 100, 100)
+
+    # 2. Beneficiary reputation — real lookup in the reputation ledger.
+    #    A known-bad beneficiary uses its ledger risk directly; an unknown /
+    #    first-time beneficiary has no track record and carries a first-time
+    #    premium (PRD scope: "High-Risk First-Time Beneficiary Transfers").
+    benf_rep = reputation_store.lookup(tx.beneficiary_id, "beneficiary")
+    if benf_rep["known"] and benf_rep["risk"] > 0:
+        beneficiary_risk = benf_rep["risk"]
+    else:
+        beneficiary_risk = tx.beneficiary_risk_score or 10
+        first_time = benf_rep["first_time"] if tx.beneficiary_id else tx.beneficiary_added_recently
+        if first_time or tx.beneficiary_added_recently:
+            beneficiary_risk = min(beneficiary_risk + 25, 100)
+
+    # 3. Authentication history — failed OTPs and pasted credentials.
+    auth_risk = min((tx.failed_otp_count or 0) * 22 + (15 if tx.paste_detected else 0), 100)
+
+    # 4. Device trust — invert device_trust_score, penalise compromised devices.
+    device_risk = 100 - (tx.device_trust_score or 80)
+    if tx.new_device:        device_risk += 15
+    if tx.rooted_device:     device_risk += 15
+    if tx.emulator_detected: device_risk += 20
+    device_risk = min(device_risk, 100)
+
+    # 5. Historical behaviour — the Dynamic Trust Engine's continuous customer
+    #    trust, plus amount deviation and velocity against the user's baseline.
+    hist_risk = 100 - trust_info["trust_score"]
+    amount_ratio = tx.amount / max(tx.avg_txn_amount or 5000, 1)
+    if amount_ratio > 5:            hist_risk += 15
+    if (tx.txn_count_1h or 1) > 3:  hist_risk += 10
+    hist_risk = min(hist_risk, 100)
+
+    # 6. Blockchain threat intelligence — reputation from the permissioned ledger.
+    blockchain_risk, intel_hits = blockchain_intel_lookup(tx)
+
+    factors = {
+        "Transaction Risk (LightGBM+IsoForest)": transaction_risk,
+        "Device Trust":                          device_risk,
+        "Historical Behaviour":                  hist_risk,
+        "Beneficiary Reputation":                beneficiary_risk,
+        "Authentication History":                auth_risk,
+        "Blockchain Threat Intelligence":        blockchain_risk,
+    }
+
+    # Per-factor notes + ledger-driven reasons (surface why reputation moved).
+    notes = {}
+    if benf_rep["known"] and benf_rep["risk"] > 0:
+        notes["Beneficiary Reputation"] = f"Ledger flag: {benf_rep.get('note','known-bad')} (risk {benf_rep['risk']:.0f})"
+        if reasons is not None:
+            reasons.append(f"Beneficiary {tx.beneficiary_id} on fraud ledger — {benf_rep.get('note','known-bad')}")
+    elif tx.beneficiary_id and benf_rep["first_time"]:
+        notes["Beneficiary Reputation"] = "First-time beneficiary — no track record"
+        if reasons is not None:
+            reasons.append("First-time beneficiary — no reputation history")
+    for hit in intel_hits:
+        notes["Blockchain Threat Intelligence"] = f"Ledger hit: {hit['entity_id']} ({hit.get('note','flagged')})"
+        if reasons is not None:
+            reasons.append(f"Blockchain intel: {hit['entity_id']} flagged ({hit['fraud_reports']} prior reports)")
+
+    tti = sum(score * TTI_WEIGHTS[f] for f, score in factors.items())
+    breakdown = [
+        {"factor": f, "score": round(score, 1), "weight": TTI_WEIGHTS[f],
+         "contribution": round(score * TTI_WEIGHTS[f], 1), "note": notes.get(f, "")}
+        for f, score in factors.items()
+    ]
+    return min(tti, 100.0), breakdown
+
 def decide(score: int) -> str:
     if score < 35: return "APPROVE"
     if score < 70: return "STEP_UP_MFA"
     return "BLOCK"
+
+# ── Blockchain policy override (PRD §10/§12) ──
+# A confirmed-fraud entity on the permissioned ledger overrides the weighted TTI:
+# the shared intelligence is high-confidence, so any transfer touching it is
+# escalated regardless of how clean the rest of the transaction looks.
+LEDGER_BLOCK_THRESHOLD = 70.0   # ledger risk >= this forces BLOCK
+LEDGER_MFA_THRESHOLD   = 40.0   # ledger risk >= this forces at least STEP_UP_MFA
+# Severity written back to the ledger when a transfer is confirmed fraud/blocked.
+FRAUD_WRITEBACK_SEVERITY = {"beneficiary": 75.0, "device": 45.0}
+
+DECISION_RANK = {"APPROVE": 0, "STEP_UP_MFA": 1, "BLOCK": 2}
+
+def apply_ledger_override(decision: str, intel_risk: float, intel_hits: list, reasons: list):
+    """Escalate the decision when a confirmed-fraud ledger entity is involved."""
+    if not intel_hits:
+        return decision
+    if intel_risk >= LEDGER_BLOCK_THRESHOLD:
+        forced = "BLOCK"
+    elif intel_risk >= LEDGER_MFA_THRESHOLD:
+        forced = "STEP_UP_MFA"
+    else:
+        return decision
+    if DECISION_RANK[forced] > DECISION_RANK[decision]:
+        ids = ", ".join(h["entity_id"] for h in intel_hits)
+        reasons.append(f"Policy override → {forced}: blockchain-confirmed entity ({ids}, risk {intel_risk:.0f})")
+        return forced
+    return decision
 
 def blockchain_store(tx_id, score, amount, reasons):
     data = f"{tx_id}:{score}:{amount}:{datetime.utcnow().isoformat()}"
@@ -289,17 +447,41 @@ def stats():
             "fraud_rate": round(session_stats["block"] / max(t, 1) * 100, 2),
             "customers_tracked": len(trust_engine.customers)}
 
+@app.get("/transactions")
+def list_transactions(limit: int = 300):
+    """List recent scored transactions (summaries) from the database."""
+    try:
+        return {"transactions": db.list_transactions(limit)}
+    except Exception as e:
+        return {"transactions": [], "error": str(e)}
+
+@app.get("/transaction/{transaction_id}")
+def get_transaction(transaction_id: str):
+    """Full stored detail for one transaction (breakdown, SHAP, reasons, STR)."""
+    rec = db.get_transaction(transaction_id)
+    if not rec:
+        raise HTTPException(404, "Transaction not found")
+    return rec
+
+@app.get("/feed")
+def get_feed(limit: int = 25):
+    """Live feed of recently scored transactions (newest first)."""
+    t = session_stats["total"]
+    return {
+        "feed": list(txn_feed)[:limit],
+        "count": len(txn_feed),
+        "stats": {"total": t, "blocked": session_stats["block"],
+                  "mfa": session_stats["verify"], "approved": session_stats["approve"]},
+    }
+
 @app.post("/score", response_model=ScoreResponse)
 def score_transaction(tx: Transaction):
     start = time.perf_counter()
     tx_id = str(uuid.uuid4())[:8].upper()
     if lgb_model is not None and feature_cols:
         fraud_prob, anomaly, reasons, shap_expl = ml_score(tx)
-        combined = fraud_prob * 0.65 + anomaly * 0.35
-        risk_score = int(min(combined * 100, 100))
     else:
         fraud_prob, anomaly, reasons, shap_expl = rule_based_score(tx)
-        risk_score = int(fraud_prob * 100)
     # Trust Engine
     impossible = (tx.geo_distance_km or 0) > 500 and (tx.txn_count_1h or 1) > 1
     geo_risk = 70 if tx.vpn_detected else 15
@@ -313,9 +495,16 @@ def score_transaction(tx: Transaction):
         impossible_travel=impossible, txn_amount=tx.amount,
         avg_amount=tx.avg_txn_amount or 5000, failed_otp=tx.failed_otp_count or 0,
         paste_detected=tx.paste_detected, beneficiary_new=tx.beneficiary_added_recently)
-    # Apply trust multiplier to risk score
-    risk_score = int(min(risk_score * trust_info["risk_multiplier"], 100))
+    # Transaction Trust Index (PRD §12): explicit 6-factor blend replaces the
+    # old ad-hoc score × trust-multiplier — historical behaviour is now a factor.
+    tti_value, tti_breakdown = compute_tti(tx, fraud_prob, anomaly, trust_info, reasons)
+    risk_score = int(round(tti_value))
     decision = decide(risk_score)
+    # ── Blockchain policy override ──
+    # Read the ledger BEFORE any write-back so a txn is never escalated by its
+    # own fingerprint — only by intelligence committed on prior transactions.
+    intel_risk, intel_hits = blockchain_intel_lookup(tx)
+    decision = apply_ledger_override(decision, intel_risk, intel_hits, reasons)
     elapsed = round((time.perf_counter() - start) * 1000, 2)
     session_stats["total"] += 1
     key = "block" if decision == "BLOCK" else ("verify" if decision == "STEP_UP_MFA" else "approve")
@@ -323,18 +512,52 @@ def score_transaction(tx: Transaction):
     chain_hash = None
     if decision in ("BLOCK", "STEP_UP_MFA"):
         chain_hash = blockchain_store(tx_id, risk_score, tx.amount, reasons)
+    # ── Feedback loop (PRD §7 step 8): commit fraud fingerprints back to the ──
+    # ledger so the NEXT transfer to the same beneficiary/device inherits the risk.
+    if decision == "BLOCK":
+        committed = []
+        for eid, kind in [(tx.beneficiary_id, "beneficiary"), (tx.device_hash, "device")]:
+            rec = reputation_store.report_fraud(eid, kind, FRAUD_WRITEBACK_SEVERITY[kind])
+            if rec:
+                committed.append(f"{rec['entity_id']}→{rec['risk']:.0f}")
+        if committed:
+            reasons.append(f"Fraud fingerprint committed to ledger: {', '.join(committed)}")
     gov_report = {}
     if decision == "BLOCK" or risk_score > 60:
         gov_report = generate_str_report(tx_id, tx, risk_score, decision, reasons, trust_info)
     trust_factors_out = [{"factor": f, "impact": v} for f, v in trust_info["trust_factors"]]
-    return ScoreResponse(
-        transaction_id=tx_id, risk_score=risk_score, decision=decision,
+    # Record in the live feed so any client (dashboard) can display it in real time.
+    feed_entry = {
+        "transaction_id": tx_id, "timestamp": datetime.utcnow().isoformat(),
+        "channel": tx.channel or "api", "amount": tx.amount,
+        "customer_id": tx.customer_id, "beneficiary_id": tx.beneficiary_id,
+        "beneficiary_name": tx.beneficiary_name, "tti": round(tti_value, 1),
+        "decision": decision, "fraud_probability": round(fraud_prob, 4),
+        "trust_score": trust_info["trust_score"],
+        "top_reason": reasons[0] if reasons else "",
+    }
+    txn_feed.appendleft(feed_entry)
+    resp = ScoreResponse(
+        transaction_id=tx_id, risk_score=risk_score,
+        tti=round(tti_value, 1), tti_breakdown=tti_breakdown, decision=decision,
         fraud_probability=round(fraud_prob, 4), anomaly_score=round(anomaly, 4),
         trust_score=trust_info["trust_score"], trust_delta=trust_info["trust_delta"],
         decision_confidence=trust_info["decision_confidence"],
         reasons=reasons, shap_explanations=shap_expl, trust_factors=trust_factors_out,
         response_time_ms=elapsed, blockchain_hash=chain_hash,
         governance_report=gov_report, timestamp=datetime.utcnow().isoformat())
+    # Persist full detail so the dashboard can re-open any past transaction.
+    try:
+        detail = resp.model_dump() if hasattr(resp, "model_dump") else resp.dict()
+        detail["amount"] = tx.amount
+        detail["customer_id"] = tx.customer_id
+        detail["beneficiary_id"] = tx.beneficiary_id
+        detail["beneficiary_name"] = tx.beneficiary_name
+        detail["channel"] = tx.channel or "api"
+        db.insert_transaction(feed_entry, detail=detail)
+    except Exception as e:
+        print("[WARN] txn persist:", e)
+    return resp
 
 @app.get("/blockchain/log")
 def get_blockchain_log():
@@ -343,6 +566,15 @@ def get_blockchain_log():
 @app.get("/governance/reports")
 def get_governance_reports():
     return {"reports": list(governance_log)[:20], "count": len(governance_log)}
+
+@app.get("/reputation")
+def get_reputation_ledger():
+    """Snapshot of the beneficiary/device reputation ledger."""
+    return reputation_store.summary()
+
+@app.get("/reputation/{entity_id}")
+def get_reputation(entity_id: str, kind: str = "beneficiary"):
+    return reputation_store.lookup(entity_id, kind)
 
 @app.get("/trust/{customer_id}")
 def get_trust(customer_id: str):
@@ -354,3 +586,10 @@ def get_trust(customer_id: str):
 def score_batch(transactions: List[Transaction]):
     if len(transactions) > 100: raise HTTPException(400, "Max 100 per batch")
     return {"results": [score_transaction(tx) for tx in transactions]}
+
+# ── Serve the IOB Pay simulator (React single-page app) at /pay ──
+# Mounted last so it never shadows the API routes above.
+IOBPAY_DIR = Path(__file__).parent.parent / "iobpay"
+if IOBPAY_DIR.exists():
+    app.mount("/pay", StaticFiles(directory=str(IOBPAY_DIR), html=True), name="pay")
+    print("[OK] PayGuard Pay app served at /pay")

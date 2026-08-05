@@ -51,10 +51,26 @@ class DynamicTrustEngine:
       trust < 40   → block and flag for review
     """
     
-    def __init__(self):
+    def __init__(self, db=None):
         self.customers: dict[str, CustomerProfile] = {}
         self.fraud_network: dict[str, float] = {}  # device/beneficiary reputation
-    
+        self.db = db
+        if db:
+            for r in db.load_customers():
+                self.customers[r["customer_id"]] = CustomerProfile(
+                    customer_id=r["customer_id"], trust_score=r["trust_score"],
+                    baseline_trust=r["baseline_trust"], total_transactions=r["total_transactions"],
+                    fraud_flags=r["fraud_flags"], consecutive_normal=r["consecutive_normal"],
+                    last_transaction_time=r["last_transaction_time"])
+
+    def _persist(self, p: "CustomerProfile"):
+        if self.db:
+            self.db.upsert_customer({
+                "customer_id": p.customer_id, "trust_score": p.trust_score,
+                "baseline_trust": p.baseline_trust, "total_transactions": p.total_transactions,
+                "fraud_flags": p.fraud_flags, "consecutive_normal": p.consecutive_normal,
+                "last_transaction_time": p.last_transaction_time})
+
     def get_or_create(self, customer_id: str) -> CustomerProfile:
         if customer_id not in self.customers:
             self.customers[customer_id] = CustomerProfile(customer_id=customer_id)
@@ -202,7 +218,9 @@ class DynamicTrustEngine:
         })
         if len(profile.trust_history) > 100:
             profile.trust_history.pop(0)
-        
+
+        self._persist(profile)
+
         # ── Risk Multiplier ──
         # Low trust amplifies risk; high trust dampens it
         if new_trust < 30:

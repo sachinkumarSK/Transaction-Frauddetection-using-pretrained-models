@@ -1,314 +1,272 @@
 """
-Continuous Trust Intelligence — Streamlit Dashboard
+PayGuard — Fraud Analyst Console (investigation dashboard)
+==========================================================
+This dashboard does NOT create payments. Payments are made in the IOB Pay app
+(http://localhost:8000/pay). This console lists every scored payment (live + all
+past ones from the database), and lets an analyst SELECT any payment to see the
+full investigation: decision, TTI breakdown, SHAP explanation, reasons, customer
+trust, and the compliance (STR) report.
+
 Run: streamlit run dashboard/app.py
 """
-import time, random, requests, json
+import os, json, requests
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime
 
-API_URL = "http://localhost:8000"
+API_URL = os.environ.get("PAYGUARD_API", "http://localhost:8000")
 
-st.set_page_config(page_title="Trust Intelligence Dashboard", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="PayGuard — Analyst Console", page_icon="🛡️",
+                   layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""<style>
-.main{background:#0a0f1e}
-.block-container{padding:1rem 1.5rem}
-div[data-testid="metric-container"]{background:linear-gradient(135deg,#131b2e,#1a2440);border-radius:12px;padding:14px 18px;border:1px solid #1e3050}
-.stButton>button{width:100%;border-radius:10px;font-weight:600;transition:all .2s}
-.risk-high{color:#ff4757;font-weight:700} .risk-med{color:#ffa502;font-weight:700} .risk-low{color:#2ed573;font-weight:700}
-.trust-badge{display:inline-block;padding:4px 12px;border-radius:20px;font-weight:600;font-size:0.85em}
+.main{background:#0e1420}
+.block-container{padding:1.2rem 2rem}
+div[data-testid="stMetric"]{background:#161d2b;border-radius:12px;padding:14px 18px;border:1px solid #24304a}
+.stButton>button{width:100%;border-radius:10px;font-weight:600}
+.cap{color:#8b98ad;font-size:0.86rem}
 </style>""", unsafe_allow_html=True)
 
-if "history" not in st.session_state: st.session_state.history = []
-if "chain_log" not in st.session_state: st.session_state.chain_log = []
-if "trust_timeline" not in st.session_state: st.session_state.trust_timeline = []
-if "customer_id" not in st.session_state: st.session_state.customer_id = "CUST-001"
+FRIENDLY = {"APPROVE": "Approved", "STEP_UP_MFA": "Risky", "BLOCK": "Blocked"}
+COLORS   = {"Approved": "#22c55e", "Risky": "#f59e0b", "Blocked": "#ef4444"}
+ICONS    = {"Approved": "✅", "Risky": "⚠️", "Blocked": "⛔"}
+SUBTITLE = {"Approved": "Payment allowed", "Risky": "Needs extra verification (OTP)", "Blocked": "Payment stopped"}
+label = lambda d: FRIENDLY.get(d, d)
+
+def api_get(path, default=None):
+    try:
+        return requests.get(f"{API_URL}{path}", timeout=2).json()
+    except Exception:
+        return default
+
+def str_report_text(gov):
+    lines = ["SUSPICIOUS TRANSACTION REPORT (STR)", "=" * 52,
+        f"STR ID           : {gov.get('str_id','—')}",
+        f"Generated At     : {gov.get('generated_at','—')}",
+        f"Regulatory Basis : {gov.get('regulatory_basis','—')}", "",
+        "TRANSACTION", "-" * 52,
+        f"Transaction ID   : {gov.get('transaction_id','—')}",
+        f"Customer ID      : {gov.get('customer_id','—')}",
+        f"Amount           : INR {gov.get('amount','—')}",
+        f"TTI (Risk Score) : {gov.get('risk_score','—')}/100",
+        f"Result           : {label(gov.get('decision',''))}",
+        f"Customer Trust   : {gov.get('trust_score','—')}/100", "",
+        "RISK INDICATORS", "-" * 52]
+    for i, ind in enumerate(gov.get("risk_indicators", []), 1):
+        lines.append(f"  {i}. {ind}")
+    lines += ["", "ACTION REQUIRED", "-" * 52, f"  {gov.get('action_required','—')}", ""]
+    return "\n".join(lines)
 
 # ── Sidebar ──
 with st.sidebar:
-    st.markdown("## 🛡️ Trust Intelligence")
-    st.markdown("*Continuous Fraud Prevention*")
+    st.markdown("## 🛡️ PayGuard")
+    st.caption("Fraud analyst console")
     st.divider()
-    try:
-        r = requests.get(f"{API_URL}/health", timeout=2)
-        if r.ok:
-            h = r.json()
-            st.success(f"✓ API Online — {h.get('mode','ML')}")
-            st.caption(f"Features: {h.get('features',0)} | Customers: {h.get('customers_tracked',0)}")
-        else: st.error("API error")
-    except: st.warning("⚠️ API offline — start API first\n```\ncd api\nuvicorn main:app --reload\n```")
-
+    h = api_get("/health")
+    if h:
+        st.success(f"Engine online — {h.get('mode','ML')}")
+        st.caption(f"{h.get('features',0)} signals · {h.get('customers_tracked',0)} customers")
+    else:
+        st.warning("Engine offline — start the API:\n```\ncd api\nuvicorn main:app --reload\n```")
     st.divider()
-    st.markdown("### 👤 Customer")
-    cust_id = st.text_input("Customer ID", st.session_state.customer_id)
-    st.session_state.customer_id = cust_id
-
+    st.markdown("### Make payments")
+    st.caption("Payments are created in the IOB Pay app. New payments appear here after you refresh.")
+    st.link_button("💳 Open IOB Pay app", "http://localhost:8000/pay/")
     st.divider()
-    st.markdown("### ⚡ Quick Scenarios")
-    c1, c2, c3 = st.columns(3)
-    preset = None
-    if c1.button("✅ Normal"): preset = "normal"
-    if c2.button("⚠️ Risky"): preset = "risky"
-    if c3.button("🚫 Fraud"): preset = "fraud"
+    refresh = st.button("🔄 Refresh data", type="primary")
+    dec_filter = st.selectbox("Filter by result", ["All", "Approved", "Risky", "Blocked"])
 
-    presets = {
-        "normal": dict(amount=3500, hour=14, avg=20000, new_dev=False, vpn=False, emu=False,
-                       root=False, paste=False, otp=0, benef=False, intl=False, geo=5,
-                       session=45, typing=0.1, shared=1, benef_risk=10, age=365, dev_trust=85),
-        "risky":  dict(amount=85000, hour=2, avg=20000, new_dev=True, vpn=True, emu=False,
-                       root=False, paste=True, otp=1, benef=True, intl=False, geo=200,
-                       session=8, typing=0.6, shared=2, benef_risk=45, age=30, dev_trust=40),
-        "fraud":  dict(amount=450000, hour=3, avg=15000, new_dev=True, vpn=True, emu=True,
-                       root=True, paste=True, otp=3, benef=True, intl=True, geo=2500,
-                       session=4, typing=0.9, shared=5, benef_risk=80, age=3, dev_trust=15),
-    }
-    if preset and preset in presets:
-        for k, v in presets[preset].items(): st.session_state[k] = v
-
-    st.divider()
-    st.markdown("### 💳 Transaction")
-    amount = st.slider("Amount (₹)", 100, 500000, st.session_state.get("amount", 5000), step=100, format="₹%d")
-    hour = st.slider("Hour", 0, 23, st.session_state.get("hour", 14))
-    avg_monthly = st.number_input("User Avg Monthly (₹)", 1000, 500000, st.session_state.get("avg", 20000), step=500)
-
-    st.markdown("### 📱 Device Signals")
-    new_device = st.checkbox("New Device", st.session_state.get("new_dev", False))
-    rooted = st.checkbox("Rooted/Jailbroken", st.session_state.get("root", False))
-    emulator = st.checkbox("Emulator", st.session_state.get("emu", False))
-    dev_trust = st.slider("Device Trust", 0, 100, st.session_state.get("dev_trust", 80))
-
-    st.markdown("### 🌍 Geo Signals")
-    vpn = st.checkbox("VPN Detected", st.session_state.get("vpn", False))
-    intl = st.checkbox("International", st.session_state.get("intl", False))
-    geo_dist = st.number_input("Geo Distance (km)", 0, 15000, st.session_state.get("geo", 5))
-
-    st.markdown("### ⚡ Session Signals")
-    session_dur = st.slider("Session Duration (s)", 1, 600, st.session_state.get("session", 45))
-    paste = st.checkbox("Paste Detected", st.session_state.get("paste", False))
-    otp_fails = st.slider("Failed OTPs", 0, 5, st.session_state.get("otp", 0))
-    benef_new = st.checkbox("New Beneficiary", st.session_state.get("benef", False))
-    typing_anom = st.slider("Typing Anomaly", 0.0, 1.0, st.session_state.get("typing", 0.1))
-
-    st.markdown("### 🔗 Relationship")
-    shared_dev = st.slider("Shared Device Accounts", 1, 10, st.session_state.get("shared", 1))
-    benef_risk = st.slider("Beneficiary Risk", 0, 100, st.session_state.get("benef_risk", 10))
-    acct_age = st.number_input("Account Age (days)", 1, 3650, st.session_state.get("age", 365))
-
-    st.divider()
-    analyze_btn = st.button("🔍 Analyze Transaction", type="primary")
-    simulate_btn = st.button("⚡ Simulate 10 Txns")
-
-# ── API Call ──
-def call_api(payload):
-    try:
-        r = requests.post(f"{API_URL}/score", json=payload, timeout=10)
-        return r.json()
-    except:
-        return fallback_score(payload)
-
-def fallback_score(p):
-    score = 0; reasons = []
-    avg = p.get("avg_txn_amount", 5000) or 5000
-    r = p["amount"] / avg
-    if r > 10: score += 40; reasons.append(f"Amount {r:.1f}x above avg")
-    elif r > 5: score += 25; reasons.append(f"Amount {r:.1f}x above avg")
-    if p["hour"] < 5: score += 20; reasons.append("Late night")
-    if p.get("new_device"): score += 15; reasons.append("New device")
-    if p.get("vpn_detected"): score += 10; reasons.append("VPN detected")
-    if p.get("emulator_detected"): score += 12; reasons.append("Emulator")
-    if p.get("paste_detected"): score += 10; reasons.append("Paste detected")
-    if (p.get("failed_otp_count") or 0) >= 2: score += 15; reasons.append(f"Failed OTP x{p['failed_otp_count']}")
-    if p.get("beneficiary_added_recently"): score += 12; reasons.append("New beneficiary")
-    score = min(score, 100)
-    dec = "APPROVE" if score < 35 else ("STEP_UP_MFA" if score < 70 else "BLOCK")
-    return {"transaction_id": f"L-{random.randint(1000,9999)}", "risk_score": score,
-            "decision": dec, "fraud_probability": score/100, "anomaly_score": score/100,
-            "trust_score": 85-score*0.5, "trust_delta": -score*0.3,
-            "decision_confidence": 0.7, "reasons": reasons,
-            "shap_explanations": [], "trust_factors": [],
-            "response_time_ms": 1.5, "blockchain_hash": None,
-            "governance_report": {}, "timestamp": datetime.utcnow().isoformat()}
-
-def add_history(res, amt):
-    merchants = ["Amazon IN","Flipkart","Swiggy","PhonePe","Paytm","Zomato","HDFC","SBI","ICICI","Google Pay"]
-    st.session_state.history.insert(0, {"TX ID": res["transaction_id"], "Amount": f"₹{amt:,.0f}",
-        "Decision": res["decision"], "Risk": res["risk_score"], "Trust": res.get("trust_score", "—"),
-        "Merchant": random.choice(merchants), "Time": datetime.now().strftime("%H:%M:%S")})
-    if "trust_score" in res:
-        st.session_state.trust_timeline.append({"trust": res["trust_score"], "time": datetime.now().strftime("%H:%M:%S"),
-            "txn": res["transaction_id"]})
-    if res.get("blockchain_hash"):
-        st.session_state.chain_log.insert(0, {"Hash": res["blockchain_hash"], "Score": res["risk_score"],
-            "Amount": f"₹{amt:,.0f}", "Time": res["timestamp"][:19].replace("T"," ")})
-    if len(st.session_state.history) > 50: st.session_state.history.pop()
-
-# ── Main Dashboard ──
-st.markdown("# 🛡️ Continuous Trust Intelligence Dashboard")
-st.markdown("*Real-time fraud prevention · LightGBM + Isolation Forest + SHAP + Dynamic Trust Engine*")
+# ── Header ──
+st.markdown("# 🛡️ PayGuard — Fraud Analyst Console")
+st.markdown("<span class='cap'>Every payment scored by the engine (live + history). "
+            "Select any payment below to investigate why it was Approved, flagged Risky, or Blocked.</span>",
+            unsafe_allow_html=True)
 st.divider()
 
-result = None
-if analyze_btn:
-    payload = {"amount": amount, "hour": hour, "customer_id": cust_id,
-        "avg_txn_amount": avg_monthly, "txn_frequency": 1.5, "txn_count_1h": 1, "txn_count_24h": 3,
-        "new_device": new_device, "rooted_device": rooted, "emulator_detected": emulator,
-        "device_trust_score": dev_trust, "geo_distance_km": geo_dist,
-        "vpn_detected": vpn, "is_international": intl,
-        "session_duration_sec": session_dur, "paste_detected": paste,
-        "failed_otp_count": otp_fails, "beneficiary_added_recently": benef_new,
-        "typing_speed_anomaly": typing_anom, "shared_device_accounts": shared_dev,
-        "beneficiary_risk_score": benef_risk, "account_age_days": acct_age}
-    with st.spinner("Analyzing..."): time.sleep(0.5); result = call_api(payload)
-    if result: add_history(result, amount)
+# ── Load transactions from the database ──
+data = api_get("/transactions?limit=300", {"transactions": []})
+txns = data.get("transactions", [])
 
-if simulate_btn:
-    prog = st.progress(0, "Simulating...")
-    for i in range(10):
-        is_fraud = random.random() > 0.7
-        sa = random.choice([800, 2500, 5000, 15000, 85000, 200000, 450000] if is_fraud else [500, 1200, 3000, 5000, 8000])
-        payload = {"amount": sa, "hour": random.randint(0,23), "customer_id": cust_id,
-            "avg_txn_amount": 20000, "new_device": random.random()>0.5 if is_fraud else False,
-            "vpn_detected": random.random()>0.4 if is_fraud else False,
-            "emulator_detected": random.random()>0.7 if is_fraud else False,
-            "rooted_device": random.random()>0.6 if is_fraud else False,
-            "paste_detected": random.random()>0.4 if is_fraud else False,
-            "failed_otp_count": random.choice([0,1,2,3]) if is_fraud else 0,
-            "beneficiary_added_recently": random.random()>0.5 if is_fraud else False,
-            "is_international": random.random()>0.6 if is_fraud else False,
-            "geo_distance_km": random.choice([500,1000,3000]) if is_fraud else random.randint(1,50),
-            "device_trust_score": random.randint(10,40) if is_fraud else random.randint(70,95),
-            "session_duration_sec": random.choice([3,5,8]) if is_fraud else random.randint(20,120),
-            "typing_speed_anomaly": round(random.uniform(0.5,0.9),2) if is_fraud else round(random.uniform(0.05,0.2),2),
-            "shared_device_accounts": random.choice([3,5,8]) if is_fraud else 1,
-            "beneficiary_risk_score": random.randint(50,90) if is_fraud else random.randint(5,20),
-            "account_age_days": random.choice([1,3,7]) if is_fraud else random.randint(90,730)}
-        r = call_api(payload)
-        if r: add_history(r, sa)
-        prog.progress((i+1)/10, f"Transaction {i+1}/10...")
-        time.sleep(0.15)
-    prog.empty(); st.success("✓ 10 transactions simulated!")
+if not txns:
+    st.info("No payments yet. Open the **IOB Pay app** (http://localhost:8000/pay), make or simulate "
+            "some payments, then click **🔄 Refresh data**.")
+    st.stop()
 
-# ── Result Panel ──
-if result:
-    dec = result["decision"]
-    score = result["risk_score"]
-    colors = {"APPROVE": "#2ed573", "STEP_UP_MFA": "#ffa502", "BLOCK": "#ff4757"}
-    icons = {"APPROVE": "✅", "STEP_UP_MFA": "⚠️", "BLOCK": "🚫"}
-    color = colors.get(dec, "#999")
+df = pd.DataFrame(txns)
+df["Result"] = df["decision"].map(label)
+df["Time"] = df["timestamp"].astype(str).str[11:19]
+if dec_filter != "All":
+    df = df[df["Result"] == dec_filter]
 
-    c1, c2, c3, c4 = st.columns([1.2, 2, 1.5, 1.5])
+# ── Stats ──
+total = len(df)
+approved = int((df["Result"] == "Approved").sum())
+risky = int((df["Result"] == "Risky").sum())
+blocked = int((df["Result"] == "Blocked").sum())
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Payments", total)
+m2.metric("✅ Approved", approved)
+m3.metric("⚠️ Risky", risky)
+m4.metric("⛔ Blocked", blocked)
+st.divider()
+
+# ── Transaction picker + list ──
+st.markdown("### Transactions")
+st.caption("Newest first. Pick one to investigate it in detail below.")
+
+records = {t["transaction_id"]: t for t in df.to_dict("records")}
+def opt_label(tid):
+    t = records[tid]
+    return f"{t['Time']} · ₹{t.get('amount',0):,.0f} · {t['Result']} · TTI {t.get('tti','—')} · {t.get('beneficiary_name') or t.get('beneficiary_id') or '—'} · {tid}"
+
+choice_id = st.selectbox("Select a transaction to investigate",
+                         options=list(records.keys()), format_func=opt_label, index=0)
+
+# compact table of all (colour by result)
+show = df[["Time", "channel", "beneficiary_name", "amount", "tti", "Result", "top_reason"]].copy()
+show["amount"] = show["amount"].map(lambda a: f"₹{a:,.0f}" if pd.notna(a) else "—")
+show.columns = ["Time", "Channel", "Beneficiary", "Amount", "TTI", "Result", "Top reason"]
+_s = show.head(25).style
+_m = _s.map if hasattr(_s, "map") else _s.applymap
+st.dataframe(_m(lambda v: f"color:{COLORS.get(v,'')};font-weight:bold" if v in COLORS else "",
+                subset=["Result"]), use_container_width=True, hide_index=True)
+st.divider()
+
+# ── Investigation of the selected transaction ──
+rec = api_get(f"/transaction/{choice_id}")
+detail = (rec or {}).get("detail")
+
+st.markdown(f"### 🔎 Investigation — `{choice_id}`")
+if not detail:
+    st.warning("No stored detail for this transaction (it was scored before detail-capture was added). "
+               "Summary only. New payments will have full detail.")
+    st.json(records[choice_id])
+else:
+    dec = label(detail["decision"])
+    tti = detail.get("tti", 0)
+    color = COLORS.get(dec, "#999")
+
+    c1, c2, c3 = st.columns([1.3, 2, 2])
     with c1:
-        st.markdown(f"### {icons.get(dec,'')} {dec}")
-        st.metric("Risk Score", f"{score}/100")
-        st.metric("Fraud Prob", f"{result['fraud_probability']*100:.1f}%")
-        st.metric("Response", f"{result['response_time_ms']} ms")
+        st.markdown(f"### {ICONS.get(dec,'')} {dec}")
+        st.caption(SUBTITLE.get(dec, ""))
+        st.metric("TTI (Trust Index)", f"{tti}/100")
+        st.caption(f"₹{detail.get('amount',0):,.0f} → {detail.get('beneficiary_name') or detail.get('beneficiary_id') or '—'}")
+        st.caption(f"Customer {detail.get('customer_id','—')} · via {detail.get('channel','—')}")
+        st.caption(f"Fraud probability {detail['fraud_probability']*100:.1f}% · {detail['response_time_ms']} ms")
     with c2:
-        fig = go.Figure(go.Indicator(mode="gauge+number+delta", value=score,
-            delta={"reference": 50}, title={"text": "Risk Score", "font": {"size": 16}},
-            gauge={"axis": {"range": [0,100]}, "bar": {"color": color},
-                "steps": [{"range":[0,35],"color":"#1a3a1a"},{"range":[35,70],"color":"#3a3a1a"},
-                          {"range":[70,100],"color":"#3a1a1a"}],
-                "threshold": {"line":{"color":color,"width":4},"value":score}}))
-        fig.update_layout(height=220, margin=dict(l=20,r=20,t=40,b=10),
+        fig = go.Figure(go.Indicator(mode="gauge+number", value=tti,
+            title={"text": "Transaction Trust Index — TTI (higher = riskier)", "font": {"size": 14}},
+            gauge={"axis": {"range": [0, 100]}, "bar": {"color": color},
+                "steps": [{"range": [0, 35], "color": "#173a26"}, {"range": [35, 70], "color": "#3a3117"},
+                          {"range": [70, 100], "color": "#3a1a1a"}],
+                "threshold": {"line": {"color": color, "width": 4}, "value": tti}}))
+        fig.update_layout(height=210, margin=dict(l=20, r=20, t=40, b=6),
                           paper_bgcolor="rgba(0,0,0,0)", font_color="#ccc")
         st.plotly_chart(fig, use_container_width=True)
+        st.caption("Under 35 → Approved · 35–70 → Risky (verify) · 70+ → Blocked")
     with c3:
-        trust = result.get("trust_score", 85)
-        delta = result.get("trust_delta", 0)
-        conf = result.get("decision_confidence", 0.5)
-        st.markdown("#### 🔐 Trust Engine")
-        st.metric("Trust Score", f"{trust:.0f}/100", delta=f"{delta:+.1f}")
-        st.metric("Confidence", f"{conf*100:.0f}%")
-        # Trust factors
-        factors = result.get("trust_factors", [])
-        if factors:
-            for f in factors[:5]:
-                icon = "🔴" if f.get("impact",0) < 0 else "🟢"
-                st.caption(f"{icon} {f.get('factor','')} ({f.get('impact',0):+.1f})")
-    with c4:
-        st.markdown("#### 🧠 SHAP Explainability")
-        shap_data = result.get("shap_explanations", [])
+        st.markdown("#### Customer trust")
+        st.caption("The customer's reputation, built over their history (higher = better).")
+        st.metric("Customer Trust", f"{detail.get('trust_score',85):.0f}/100",
+                  delta=f"{detail.get('trust_delta',0):+.1f}")
+        for f in detail.get("trust_factors", [])[:3]:
+            icon = "🔴" if f.get("impact", 0) < 0 else "🟢"
+            st.caption(f"{icon} {f.get('factor','')} ({f.get('impact',0):+.1f})")
+
+    r1, r2 = st.columns(2)
+    with r1:
+        st.markdown("#### Why this decision")
+        st.caption("Plain-language risk signals for this payment.")
+        for reason in detail.get("reasons", [])[:8]:
+            st.markdown(f"- {reason}")
+    with r2:
+        st.markdown("#### What the AI model weighed (SHAP)")
+        st.caption("Features that pushed the model's fraud probability up (🔴) or down (🟢).")
+        shap_data = detail.get("shap_explanations", [])
         if shap_data:
-            for s in shap_data[:5]:
-                icon = "🔴" if s.get("impact","") == "increases_risk" else "🟢"
-                st.caption(f"{icon} **{s['feature']}**: {s['shap_value']:.3f}")
-        st.markdown("#### 📋 Risk Reasons")
-        for reason in result.get("reasons", [])[:5]:
-            st.caption(f"• {reason}")
+            for s in shap_data[:8]:
+                icon = "🔴" if s.get("impact", "") == "increases_risk" else "🟢"
+                st.markdown(f"{icon} **{s['feature']}** — {s['shap_value']:.3f}")
+        else:
+            st.caption("No SHAP output for this transaction.")
 
-    # Governance report
-    gov = result.get("governance_report", {})
+    breakdown = detail.get("tti_breakdown", [])
+    if breakdown:
+        st.markdown("#### TTI breakdown — the 6 checks")
+        st.caption("The TTI is a weighted blend of six checks. Each bar = that check's contribution "
+                   "(its 0–100 sub-score × its weight).")
+        bd = pd.DataFrame(breakdown).iloc[::-1]
+        fig_bd = go.Figure(go.Bar(
+            y=bd["factor"], x=bd["contribution"], orientation="h",
+            marker=dict(color=bd["score"], colorscale="RdYlGn_r", cmin=0, cmax=100,
+                        colorbar=dict(title="Risk", thickness=12)),
+            text=[f"{s:.0f} × {w} = {c:.1f}" for s, w, c in zip(bd["score"], bd["weight"], bd["contribution"])],
+            textposition="auto"))
+        fig_bd.update_layout(height=300, margin=dict(l=10, r=10, t=6, b=10),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#ccc",
+            xaxis_title="Contribution to TTI")
+        st.plotly_chart(fig_bd, use_container_width=True)
+        for b in breakdown:
+            if b.get("note"): st.caption(f"• {b['factor']}: {b['note']}")
+
+    gov = detail.get("governance_report", {})
     if gov:
-        with st.expander("📜 Governance / STR Report"):
+        with st.expander("Compliance report (STR) — download"):
             st.json(gov)
-    st.divider()
-
-# ── Analytics ──
-history = st.session_state.history
-if history:
-    df_hist = pd.DataFrame(history)
-    total = len(df_hist)
-    blocked = (df_hist["Decision"]=="BLOCK").sum()
-    mfa = (df_hist["Decision"]=="STEP_UP_MFA").sum()
-    approved = (df_hist["Decision"]=="APPROVE").sum()
-
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Analyzed", total)
-    m2.metric("✅ Approved", approved, delta=f"{approved/total*100:.0f}%")
-    m3.metric("⚠️ MFA", mfa, delta=f"{mfa/total*100:.0f}%")
-    m4.metric("🚫 Blocked", blocked, delta=f"-{blocked/total*100:.0f}%")
-
-    ch1, ch2 = st.columns(2)
-    with ch1:
-        st.markdown("#### Decision Distribution")
-        dec_counts = df_hist["Decision"].value_counts()
-        fig_pie = px.pie(values=dec_counts.values, names=dec_counts.index,
-            color=dec_counts.index, color_discrete_map={"APPROVE":"#2ed573","STEP_UP_MFA":"#ffa502","BLOCK":"#ff4757"}, hole=0.45)
-        fig_pie.update_layout(height=260, margin=dict(l=10,r=10,t=10,b=10),
-            paper_bgcolor="rgba(0,0,0,0)", font_color="#ccc", legend=dict(orientation="h",y=-0.1))
-        st.plotly_chart(fig_pie, use_container_width=True)
-    with ch2:
-        st.markdown("#### Risk Score Timeline")
-        df_plot = df_hist.copy(); df_plot["Index"] = range(len(df_plot)); df_plot = df_plot.iloc[::-1]
-        fig_sc = px.scatter(df_plot, x="Index", y="Risk", color="Decision",
-            color_discrete_map={"APPROVE":"#2ed573","STEP_UP_MFA":"#ffa502","BLOCK":"#ff4757"}, size=[8]*len(df_plot))
-        fig_sc.add_hline(y=35, line_dash="dash", line_color="#2ed573", opacity=0.5)
-        fig_sc.add_hline(y=70, line_dash="dash", line_color="#ff4757", opacity=0.5)
-        fig_sc.update_layout(height=260, margin=dict(l=10,r=10,t=10,b=10),
-            paper_bgcolor="rgba(0,0,0,0)", font_color="#ccc", legend=dict(orientation="h",y=-0.2))
-        st.plotly_chart(fig_sc, use_container_width=True)
-
-    # Trust timeline
-    if st.session_state.trust_timeline:
-        st.markdown("#### 🔐 Trust Score Evolution")
-        df_trust = pd.DataFrame(st.session_state.trust_timeline)
-        fig_trust = px.line(df_trust, x="time", y="trust", markers=True,
-            labels={"trust": "Trust Score", "time": "Transaction"})
-        fig_trust.add_hline(y=70, line_dash="dash", line_color="#2ed573", opacity=0.5, annotation_text="Trusted")
-        fig_trust.add_hline(y=40, line_dash="dash", line_color="#ff4757", opacity=0.5, annotation_text="Untrusted")
-        fig_trust.update_layout(height=250, margin=dict(l=10,r=10,t=10,b=10),
-            paper_bgcolor="rgba(0,0,0,0)", font_color="#ccc")
-        fig_trust.update_traces(line_color="#7c3aed")
-        st.plotly_chart(fig_trust, use_container_width=True)
-
-    st.markdown("#### 📋 Transaction Feed")
-    def color_dec(val):
-        c = {"APPROVE":"#2ed573","STEP_UP_MFA":"#ffa502","BLOCK":"#ff4757"}.get(val,"")
-        return f"color:{c};font-weight:bold"
-    styled = df_hist.head(20).style.applymap(color_dec, subset=["Decision"])
-    st.dataframe(styled, use_container_width=True, hide_index=True)
-
-# ── Blockchain Log ──
-if st.session_state.chain_log:
-    st.divider()
-    st.markdown("#### ⛓️ Blockchain Fraud Pattern Log")
-    st.caption("Fraud fingerprints stored on Hyperledger Fabric (simulated)")
-    st.dataframe(pd.DataFrame(st.session_state.chain_log), use_container_width=True, hide_index=True)
-else:
-    st.info("No fraud patterns yet. Analyze a transaction to begin.")
+            d1, d2 = st.columns(2)
+            d1.download_button("Download STR (.txt)", str_report_text(gov),
+                file_name=f"{gov.get('str_id','STR')}.txt", mime="text/plain")
+            d2.download_button("Download STR (.json)", json.dumps(gov, indent=2),
+                file_name=f"{gov.get('str_id','STR')}.json", mime="application/json")
 
 st.divider()
-st.caption("Continuous Trust Intelligence Framework · LightGBM + IsoForest + SHAP + Dynamic Trust Engine · FastAPI + Streamlit")
+
+# ── Session analytics (across all loaded transactions) ──
+st.markdown("### Analytics")
+a1, a2 = st.columns(2)
+with a1:
+    st.markdown("#### Outcomes")
+    st.caption("Share of payments by result.")
+    vc = df["Result"].value_counts()
+    fig_pie = px.pie(values=vc.values, names=vc.index, color=vc.index,
+                     color_discrete_map=COLORS, hole=0.45)
+    fig_pie.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", font_color="#ccc", legend=dict(orientation="h", y=-0.1))
+    st.plotly_chart(fig_pie, use_container_width=True)
+with a2:
+    st.markdown("#### TTI over time")
+    st.caption("Each dot is one payment; lines mark the Approve / Risky / Block bands.")
+    dfp = df.iloc[::-1].reset_index(drop=True); dfp["#"] = range(len(dfp))
+    fig_sc = px.scatter(dfp, x="#", y="tti", color="Result", color_discrete_map=COLORS,
+                        hover_data=["transaction_id", "amount"], size=[8] * len(dfp))
+    fig_sc.add_hline(y=35, line_dash="dash", line_color="#22c55e", opacity=0.5)
+    fig_sc.add_hline(y=70, line_dash="dash", line_color="#ef4444", opacity=0.5)
+    fig_sc.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", font_color="#ccc", legend=dict(orientation="h", y=-0.2),
+        yaxis_title="TTI")
+    st.plotly_chart(fig_sc, use_container_width=True)
+
+# ── Reputation ledger ──
+st.divider()
+st.markdown("### Fraud reputation ledger")
+st.caption("Shared memory of known-bad receivers and devices. A confirmed fraud raises an entity's risk, "
+           "so future payments to it are caught automatically.")
+rep = api_get("/reputation")
+if rep:
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Entities", rep.get("total_entities", 0))
+    g2.metric("Receivers", rep.get("beneficiaries", 0))
+    g3.metric("Devices", rep.get("devices", 0))
+    g4.metric("Flagged", rep.get("flagged", 0))
+    entries = rep.get("entries", [])
+    if entries:
+        led = pd.DataFrame(entries)[["entity_id", "kind", "risk", "fraud_reports", "note"]]
+        led.columns = ["Entity", "Type", "Risk", "Fraud reports", "Note"]
+        st.dataframe(led, use_container_width=True, hide_index=True)
+else:
+    st.info("Ledger unavailable — start the API.")
+
+st.divider()
+st.caption("PayGuard · Transaction Trust Index / TTI (6-check blend) · AI model + anomaly detection + explainability + shared fraud memory")
