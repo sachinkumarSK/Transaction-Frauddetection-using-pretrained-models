@@ -1,5 +1,5 @@
 """
-PayGuard — Fraud Analyst Console (investigation dashboard)
+PaymentGuardian — Fraud Analyst Console (investigation dashboard)
 ==========================================================
 This dashboard does NOT create payments. Payments are made in the IOB Pay app
 (http://localhost:8000/pay). This console lists every scored payment (live + all
@@ -15,9 +15,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 
-API_URL = os.environ.get("PAYGUARD_API", "http://localhost:8000")
+API_URL = os.environ.get("PAYMENTGUARDIAN_API", "http://localhost:8000")
 
-st.set_page_config(page_title="PayGuard — Analyst Console", page_icon="🛡️",
+st.set_page_config(page_title="PaymentGuardian — Analyst Console", page_icon="🛡️",
                    layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""<style>
@@ -60,7 +60,7 @@ def str_report_text(gov):
 
 # ── Sidebar ──
 with st.sidebar:
-    st.markdown("## 🛡️ PayGuard")
+    st.markdown("## 🛡️ PaymentGuardian")
     st.caption("Fraud analyst console")
     st.divider()
     h = api_get("/health")
@@ -78,7 +78,7 @@ with st.sidebar:
     dec_filter = st.selectbox("Filter by result", ["All", "Approved", "Risky", "Blocked"])
 
 # ── Header ──
-st.markdown("# 🛡️ PayGuard — Fraud Analyst Console")
+st.markdown("# 🛡️ PaymentGuardian — Fraud Analyst Console")
 st.markdown("<span class='cap'>Every payment scored by the engine (live + history). "
             "Select any payment below to investigate why it was Approved, flagged Risky, or Blocked.</span>",
             unsafe_allow_html=True)
@@ -146,6 +146,7 @@ else:
     dec = label(detail["decision"])
     tti = detail.get("tti", 0)
     color = COLORS.get(dec, "#999")
+    raw = detail.get("raw", {})
 
     c1, c2, c3 = st.columns([1.3, 2, 2])
     with c1:
@@ -175,6 +176,58 @@ else:
             icon = "🔴" if f.get("impact", 0) < 0 else "🟢"
             st.caption(f"{icon} {f.get('factor','')} ({f.get('impact',0):+.1f})")
 
+    if raw:
+        st.markdown("#### Transaction details")
+        st.caption("Everything the engine received about this payment — account, device, location and session signals.")
+        FIELD_GROUPS = [
+            ("Account & behaviour", [
+                ("account_age_days", "Account age", "{} days"),
+                ("avg_txn_amount", "Avg. spend", "₹{:,.0f}"),
+                ("txn_frequency", "Txn frequency", "{:.1f}/day"),
+                ("txn_count_1h", "Payments in last hour", "{}"),
+                ("txn_count_24h", "Payments in last 24h", "{}"),
+                ("hour", "Hour of day", "{:02.0f}:00"),
+            ]),
+            ("Device", [
+                ("device_trust_score", "Device trust", "{:.0f}/100"),
+                ("new_device", "New / unknown device", None),
+                ("rooted_device", "Rooted / jailbroken", None),
+                ("emulator_detected", "Emulator detected", None),
+            ]),
+            ("Location", [
+                ("geo_distance_km", "Distance from last txn", "{:.0f} km"),
+                ("vpn_detected", "VPN / proxy", None),
+                ("is_international", "International", None),
+            ]),
+            ("Session", [
+                ("session_duration_sec", "Time on page", "{:.0f}s"),
+                ("paste_detected", "Account no. pasted", None),
+                ("failed_otp_count", "Failed OTP attempts", "{}"),
+                ("typing_speed_anomaly", "Typing anomaly", "{:.2f}"),
+            ]),
+            ("Relationship", [
+                ("beneficiary_added_recently", "New beneficiary", None),
+                ("beneficiary_risk_score", "Beneficiary risk", "{:.0f}/100"),
+                ("shared_device_accounts", "Accounts sharing device", "{}"),
+            ]),
+        ]
+        d_cols = st.columns(len(FIELD_GROUPS))
+        for d_col, (group_name, fields) in zip(d_cols, FIELD_GROUPS):
+            with d_col:
+                st.markdown(f"**{group_name}**")
+                for key, lbl, fmt in fields:
+                    val = raw.get(key)
+                    if val is None:
+                        continue
+                    if fmt is None:
+                        icon = "🔴" if val else "🟢"
+                        st.caption(f"{icon} {lbl}: {'Yes' if val else 'No'}")
+                    else:
+                        try:
+                            st.caption(f"{lbl}: {fmt.format(val)}")
+                        except (ValueError, TypeError):
+                            st.caption(f"{lbl}: {val}")
+
     r1, r2 = st.columns(2)
     with r1:
         st.markdown("#### Why this decision")
@@ -188,7 +241,9 @@ else:
         if shap_data:
             for s in shap_data[:8]:
                 icon = "🔴" if s.get("impact", "") == "increases_risk" else "🟢"
-                st.markdown(f"{icon} **{s['feature']}** — {s['shap_value']:.3f}")
+                fval = raw.get(s["feature"])
+                fval_txt = f" *(value: {fval})*" if fval is not None else ""
+                st.markdown(f"{icon} **{s['feature']}**{fval_txt} — {s['shap_value']:.3f}")
         else:
             st.caption("No SHAP output for this transaction.")
 
@@ -269,4 +324,4 @@ else:
     st.info("Ledger unavailable — start the API.")
 
 st.divider()
-st.caption("PayGuard · Transaction Trust Index / TTI (6-check blend) · AI model + anomaly detection + explainability + shared fraud memory")
+st.caption("PaymentGuardian · Transaction Trust Index / TTI (6-check blend) · AI model + anomaly detection + explainability + shared fraud memory")

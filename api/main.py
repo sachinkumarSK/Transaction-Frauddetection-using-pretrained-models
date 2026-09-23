@@ -20,16 +20,36 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, str(Path(__file__).parent.parent / "models"))
 from trust_engine import DynamicTrustEngine
 from reputation import ReputationStore
-from db import PayGuardDB
+from db import PaymentGuardianDB
 
-app = FastAPI(title="PayGuard API", version="2.0.0",
+app = FastAPI(title="PaymentGuardian API", version="2.0.0",
               description="Real-time payment fraud protection — Risk Score (6-check blend) + LightGBM + SHAP")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 MODEL_DIR = Path(__file__).parent.parent / "models"
-db = PayGuardDB()                                  # SQLite persistence (data/payguard.db)
+db = PaymentGuardianDB()                                  # SQLite persistence (data/paymentguardian.db)
 trust_engine = DynamicTrustEngine(db=db)
 reputation_store = ReputationStore(db=db)
+DEFAULT_STARTING_BALANCE = 184500  # matches the users.balance column default in models/db.py
+
+# ── IOB Pay "pay to" contacts — seeded once, split roughly evenly across
+# safe / moderate / risky so the app has something appealing (and instructive)
+# to demo on first run. The two mule accounts double as entries already
+# flagged in the reputation ledger (models/reputation.py), so paying them
+# exercises the ledger-override path too. ──
+DEFAULT_BENEFICIARIES = [
+    {"beneficiary_id": "BENF-TRUSTED-01", "name": "Priya Sharma",        "bank_label": "HDFC Bank ••1234",   "tier": "safe",     "risk_score": 8,  "account_age_days": 620, "is_new": 0, "note": "Saved payee · 3 yrs",        "sort_order": 1},
+    {"beneficiary_id": "BENF-TRUSTED-02", "name": "Rohan Mehta",         "bank_label": "ICICI Bank ••5678",  "tier": "safe",     "risk_score": 6,  "account_age_days": 900, "is_new": 0, "note": "Saved payee · frequent",     "sort_order": 2},
+    {"beneficiary_id": "BENF-TRUSTED-03", "name": "Anita Desai",         "bank_label": "SBI ••2211",         "tier": "safe",     "risk_score": 10, "account_age_days": 410, "is_new": 0, "note": "Landlord · monthly rent",    "sort_order": 3},
+    {"beneficiary_id": "BENF-TRUSTED-04", "name": "Amazon Pay",          "bank_label": "Axis Bank ••7788",   "tier": "safe",     "risk_score": 12, "account_age_days": 730, "is_new": 0, "note": "Verified merchant",          "sort_order": 4},
+    {"beneficiary_id": "BENF-NEW-QM01",   "name": "QuickMart Online",    "bank_label": "Kotak ••4432",       "tier": "moderate", "risk_score": 40, "account_age_days": 45,  "is_new": 1, "note": "First-time payee",           "sort_order": 5},
+    {"beneficiary_id": "BENF-NEW-VS02",   "name": "Vikram Singh",        "bank_label": "Yes Bank ••9090",    "tier": "moderate", "risk_score": 48, "account_age_days": 20,  "is_new": 1, "note": "Added this week",            "sort_order": 6},
+    {"beneficiary_id": "BENF-NEW-NK03",   "name": "Neha Kulkarni",       "bank_label": "IDFC First ••3345",  "tier": "moderate", "risk_score": 52, "account_age_days": 12,  "is_new": 1, "note": "Friend · unsaved",           "sort_order": 7},
+    {"beneficiary_id": "BENF-MULE-001",   "name": "Unknown A/C ••9021",  "bank_label": "Unverified bank",    "tier": "risky",    "risk_score": 92, "account_age_days": 3,   "is_new": 1, "note": "⚠ Flagged: known mule",      "sort_order": 8},
+    {"beneficiary_id": "BENF-MULE-002",   "name": "Fast Cash Traders",   "bank_label": "Unverified bank",    "tier": "risky",    "risk_score": 85, "account_age_days": 6,   "is_new": 1, "note": "⚠ Flagged: multiple STRs",   "sort_order": 9},
+    {"beneficiary_id": "BENF-SCAM-088",   "name": "Lucky Prize Payout",  "bank_label": "Unverified bank",    "tier": "risky",    "risk_score": 78, "account_age_days": 2,   "is_new": 1, "note": "⚠ Flagged: APP fraud payout", "sort_order": 10},
+]
+db.seed_beneficiaries(DEFAULT_BENEFICIARIES)
 
 # Global model references
 lgb_model = iso_model = scaler = feature_cols = anomaly_features = None
@@ -114,6 +134,16 @@ class Transaction(BaseModel):
     shared_device_accounts: Optional[int] = Field(1)
     beneficiary_risk_score: Optional[float] = Field(10, ge=0, le=100)
     account_age_days: Optional[int] = Field(365)
+    # Location context (IOB Pay map widget) — the customer's usual/frequent
+    # location vs. where this specific payment is being made from. Kept
+    # alongside geo_distance_km/is_international purely so the raw picture
+    # (pins + labels) survives into the stored transaction for the dashboard.
+    home_label: Optional[str] = None
+    home_lat: Optional[float] = None
+    home_lon: Optional[float] = None
+    payment_label: Optional[str] = None
+    payment_lat: Optional[float] = None
+    payment_lon: Optional[float] = None
     # PCA (optional, for full ML scoring)
     v1: Optional[float]=None; v2: Optional[float]=None; v3: Optional[float]=None
     v4: Optional[float]=None; v5: Optional[float]=None; v6: Optional[float]=None
@@ -144,6 +174,21 @@ class ScoreResponse(BaseModel):
     blockchain_hash: Optional[str]
     governance_report: dict
     timestamp: str
+
+# ── IOB Pay account schemas (simulation only — not production auth) ──
+class SignupRequest(BaseModel):
+    full_name: str = Field(..., min_length=1, example="Priya Sharma")
+    email: str = Field(..., example="priya@example.com")
+    phone: Optional[str] = None
+    password: str = Field(..., min_length=4)
+    home_label: str = Field(..., example="Bengaluru")
+    home_lat: float
+    home_lon: float
+    home_country: Optional[str] = "IN"
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 # ── Feature Builder ──
 def build_feature_vector(tx: Transaction) -> np.ndarray:
@@ -554,6 +599,9 @@ def score_transaction(tx: Transaction):
         detail["beneficiary_id"] = tx.beneficiary_id
         detail["beneficiary_name"] = tx.beneficiary_name
         detail["channel"] = tx.channel or "api"
+        # Full raw input (account age, session, device, location, ...) so the
+        # dashboard can show exactly what the engine saw, not just the verdict.
+        detail["raw"] = tx.model_dump() if hasattr(tx, "model_dump") else tx.dict()
         db.insert_transaction(feed_entry, detail=detail)
     except Exception as e:
         print("[WARN] txn persist:", e)
@@ -587,9 +635,82 @@ def score_batch(transactions: List[Transaction]):
     if len(transactions) > 100: raise HTTPException(400, "Max 100 per batch")
     return {"results": [score_transaction(tx) for tx in transactions]}
 
+# ── IOB Pay accounts (simulation) ──
+# A real bank never stores or checks passwords like this. This exists only so
+# the IOB Pay demo can require "log in before you can pay" — i.e. every
+# transaction is tied to one consistently-identified customer_id instead of a
+# free-text field — which is what makes the customer's history (account age,
+# trust score, home location) mean anything to the fraud engine.
+def _hash_password(password: str) -> str:
+    return hashlib.sha256(f"paymentguardian-sim::{password}".encode()).hexdigest()
+
+def _user_public(u: dict) -> dict:
+    return {"user_id": u["user_id"], "full_name": u["full_name"], "email": u["email"],
+            "home_label": u["home_label"], "home_lat": u["home_lat"], "home_lon": u["home_lon"],
+            "home_country": u["home_country"], "balance": u["balance"]}
+
+@app.post("/auth/signup")
+def signup(req: SignupRequest):
+    email = req.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(400, "Enter a valid email address")
+    if db.get_user_by_email(email):
+        raise HTTPException(409, "An account with this email already exists — please log in instead")
+    user_id = "IOBPAY-" + hashlib.sha1(email.encode()).hexdigest()[:8].upper()
+    if db.get_user(user_id):
+        raise HTTPException(409, "An account already exists for this email")
+    user = {"user_id": user_id, "full_name": req.full_name.strip(), "email": email,
+            "phone": req.phone, "password_hash": _hash_password(req.password),
+            "home_label": req.home_label, "home_lat": req.home_lat, "home_lon": req.home_lon,
+            "home_country": req.home_country or "IN", "balance": DEFAULT_STARTING_BALANCE,
+            "created_at": datetime.utcnow().isoformat()}
+    db.create_user(user)
+    return _user_public(user)
+
+@app.post("/auth/login")
+def login(req: LoginRequest):
+    user = db.get_user_by_email(req.email.strip().lower())
+    if not user or user["password_hash"] != _hash_password(req.password):
+        raise HTTPException(401, "Incorrect email or password")
+    return _user_public(user)
+
+@app.get("/beneficiaries")
+def get_beneficiaries():
+    """The 10 'pay to' accounts shown in IOB Pay, pre-classified safe / moderate / risky."""
+    return {"beneficiaries": db.list_beneficiaries()}
+
+# ── Wallet balance ──
+# IOB Pay's account balance was static before; a completed payment now
+# actually debits it, and it's read back on login/refresh so it survives
+# reloads and stays in sync with what the DB has.
+class DebitRequest(BaseModel):
+    user_id: str
+    amount: float = Field(..., gt=0)
+
+@app.get("/wallet/balance/{user_id}")
+def get_wallet_balance(user_id: str):
+    user = db.get_user(user_id)
+    if not user:
+        raise HTTPException(404, "Account not found")
+    return {"user_id": user_id, "balance": user["balance"]}
+
+@app.post("/wallet/debit")
+def debit_wallet(req: DebitRequest):
+    """Called by IOB Pay right after a payment is APPROVED (or MFA-verified) —
+    never for a BLOCK, and never as part of /score itself, since /score also
+    scores synthetic/simulated traffic that isn't tied to a real balance."""
+    user = db.get_user(req.user_id)
+    if not user:
+        raise HTTPException(404, "Account not found")
+    new_balance = user["balance"] - req.amount
+    if new_balance < 0:
+        raise HTTPException(402, "Insufficient balance")
+    db.update_balance(req.user_id, new_balance)
+    return {"user_id": req.user_id, "balance": new_balance}
+
 # ── Serve the IOB Pay simulator (React single-page app) at /pay ──
 # Mounted last so it never shadows the API routes above.
 IOBPAY_DIR = Path(__file__).parent.parent / "iobpay"
 if IOBPAY_DIR.exists():
     app.mount("/pay", StaticFiles(directory=str(IOBPAY_DIR), html=True), name="pay")
-    print("[OK] PayGuard Pay app served at /pay")
+    print("[OK] PaymentGuardian Pay app served at /pay")

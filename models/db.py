@@ -1,13 +1,13 @@
 """
-PayGuard persistence layer  (SQLite — Python stdlib, no extra dependency)
+PaymentGuardian persistence layer  (SQLite — Python stdlib, no extra dependency)
 =========================================================================
-Gives PayGuard durable storage so the "learned" state survives an API restart:
+Gives PaymentGuardian durable storage so the "learned" state survives an API restart:
   - reputation ledger  (beneficiary / device risk — the fraud memory)
   - customer trust      (Dynamic Trust Engine per-customer scores)
   - transactions        (the live feed / history)
 
 This replaces the previous in-memory-only stores. The DB file lives at
-data/payguard.db and is created automatically on first run.
+data/paymentguardian.db and is created automatically on first run.
 
 (For a large production deployment the PRD calls for PostgreSQL; SQLite gives us
 the same durability with zero setup, which is right for this stage.)
@@ -16,10 +16,10 @@ the same durability with zero setup, which is right for this stage.)
 import sqlite3, threading
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "data" / "payguard.db"
+DB_PATH = Path(__file__).parent.parent / "data" / "paymentguardian.db"
 
 
-class PayGuardDB:
+class PaymentGuardianDB:
     def __init__(self, path=DB_PATH):
         self.path = str(path)
         self._lock = threading.Lock()          # serialise writes (FastAPI is threaded)
@@ -45,12 +45,22 @@ class PayGuardDB:
                 customer_id TEXT, beneficiary_id TEXT, beneficiary_name TEXT, tti REAL,
                 decision TEXT, fraud_probability REAL, trust_score REAL, top_reason TEXT,
                 detail_json TEXT);
+            CREATE TABLE IF NOT EXISTS users(
+                user_id TEXT PRIMARY KEY, full_name TEXT, email TEXT UNIQUE, phone TEXT,
+                password_hash TEXT, home_label TEXT, home_lat REAL, home_lon REAL,
+                home_country TEXT, balance REAL DEFAULT 184500, created_at TEXT);
+            CREATE TABLE IF NOT EXISTS beneficiaries(
+                beneficiary_id TEXT PRIMARY KEY, name TEXT, bank_label TEXT, tier TEXT,
+                risk_score REAL, account_age_days INTEGER, is_new INTEGER, note TEXT,
+                sort_order INTEGER);
             """)
-            # Migration for databases created before detail_json existed.
-            try:
-                c.execute("ALTER TABLE transactions ADD COLUMN detail_json TEXT")
-            except sqlite3.OperationalError:
-                pass  # column already present
+            # Migration for databases created before detail_json / balance existed.
+            for stmt in ("ALTER TABLE transactions ADD COLUMN detail_json TEXT",
+                         "ALTER TABLE users ADD COLUMN balance REAL DEFAULT 184500"):
+                try:
+                    c.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass  # column already present
 
     # ── Reputation ledger ──
     def load_reputation(self) -> list[dict]:
@@ -134,6 +144,47 @@ class PayGuardDB:
         d = dict(r)
         detail = d.pop("detail_json", None)
         return {"summary": d, "detail": json.loads(detail) if detail else None}
+
+    # ── Users (IOB Pay sign-up / login — simulation only, not real auth) ──
+    def create_user(self, u: dict):
+        with self._lock, self._conn() as c:
+            c.execute("""INSERT INTO users
+                (user_id,full_name,email,phone,password_hash,home_label,home_lat,home_lon,home_country,created_at)
+                VALUES(:user_id,:full_name,:email,:phone,:password_hash,:home_label,:home_lat,:home_lon,:home_country,:created_at)""",
+                u)
+
+    def get_user(self, user_id: str) -> dict | None:
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+            return dict(r) if r else None
+
+    def get_user_by_email(self, email: str) -> dict | None:
+        with self._conn() as c:
+            r = c.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+            return dict(r) if r else None
+
+    def update_balance(self, user_id: str, balance: float):
+        with self._lock, self._conn() as c:
+            c.execute("UPDATE users SET balance=? WHERE user_id=?", (balance, user_id))
+
+    # ── Beneficiaries (the 10 "pay to" accounts shown in IOB Pay) ──
+    def seed_beneficiaries(self, rows: list[dict]):
+        with self._lock, self._conn() as c:
+            for r in rows:
+                c.execute("""INSERT OR IGNORE INTO beneficiaries
+                    (beneficiary_id,name,bank_label,tier,risk_score,account_age_days,is_new,note,sort_order)
+                    VALUES(:beneficiary_id,:name,:bank_label,:tier,:risk_score,:account_age_days,:is_new,:note,:sort_order)""",
+                    r)
+
+    def list_beneficiaries(self) -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM beneficiaries ORDER BY sort_order").fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["is_new"] = bool(d["is_new"])
+                out.append(d)
+            return out
 
     def decision_counts(self) -> dict:
         with self._conn() as c:

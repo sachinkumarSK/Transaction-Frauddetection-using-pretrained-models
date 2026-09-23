@@ -8,6 +8,10 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- Real map: Leaflet + OpenStreetMap tiles (free, no API key). Nominatim
+     (also OpenStreetMap) does the live geocoding/reverse-geocoding below. -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
   :root{
     --brand:#0b57a4; --brand2:#1673c4; --ink:#0f1b2d; --muted:#6b7a90;
@@ -17,7 +21,7 @@
   body{ font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink);
         background:linear-gradient(160deg,#eef2f8,#d8e2f0); min-height:100vh;
         display:flex; align-items:center; justify-content:center; padding:24px; }
-  .phone{ width:420px; max-width:100%; background:#fff; border-radius:28px; overflow:hidden;
+  .phone{ width:440px; max-width:100%; background:#fff; border-radius:28px; overflow:hidden;
           box-shadow:0 24px 70px rgba(15,32,60,.30); }
 
   /* Header */
@@ -28,11 +32,15 @@
          display:flex; align-items:center; justify-content:center; font-size:17px; }
   .chip{ font-size:11px; font-weight:700; background:rgba(255,255,255,.16); padding:6px 11px; border-radius:20px; }
   .acct{ background:rgba(255,255,255,.12); border:1px solid rgba(255,255,255,.15); border-radius:14px;
-         padding:12px 15px; margin-top:16px; display:flex; justify-content:space-between; align-items:center; }
+         padding:12px 15px; margin-top:14px; display:flex; justify-content:space-between; align-items:center; }
   .acct .lbl{ font-size:11px; opacity:.82; } .acct .val{ font-size:15px; font-weight:700; margin-top:3px; }
+  .userbar{ display:flex; justify-content:space-between; align-items:center; font-size:12.5px;
+            margin-top:14px; color:rgba(255,255,255,.92); }
+  .logout{ cursor:pointer; opacity:.9; text-decoration:underline; font-weight:600; }
 
   /* Form */
   .body{ padding:20px 22px 6px; }
+  .authbody{ padding:22px 22px 6px; }
   label{ display:block; font-size:11.5px; font-weight:700; color:var(--muted); margin:16px 0 7px;
          text-transform:uppercase; letter-spacing:.5px; }
   input,select{ width:100%; padding:12px 14px; border:1.5px solid var(--line); border-radius:12px;
@@ -49,6 +57,41 @@
   .seg button{ flex:1; padding:10px 6px; border-radius:10px; border:none; background:transparent;
                font-size:12.5px; font-weight:700; cursor:pointer; color:var(--muted); transition:.15s; }
   .seg button.on{ background:#fff; color:var(--brand); box-shadow:0 2px 6px rgba(15,32,60,.12); }
+
+  /* Auth tabs */
+  .tabs{ display:flex; gap:6px; background:var(--surface); padding:5px; border-radius:14px; border:1px solid var(--line); margin-bottom:4px; }
+  .tabs button{ flex:1; padding:11px 6px; border-radius:10px; border:none; background:transparent;
+                font-size:13px; font-weight:700; cursor:pointer; color:var(--muted); transition:.15s; }
+  .tabs button.on{ background:#fff; color:var(--brand); box-shadow:0 2px 6px rgba(15,32,60,.12); }
+  .hint{ font-size:11.5px; color:var(--muted); margin-top:6px; line-height:1.55; }
+
+  /* Map widget — real Leaflet/OpenStreetMap tiles */
+  .maproot{ background:#eaf1fb; border:1px solid var(--line); border-radius:14px; padding:10px 10px 8px; margin-top:10px; }
+  .maproot .leaflet-container{ border-radius:10px; font-family:inherit; }
+  .mapmeta{ display:flex; justify-content:space-between; gap:8px; font-size:11px; color:var(--muted); margin-top:7px; padding:0 2px; flex-wrap:wrap; }
+  .mapmeta b{ color:var(--ink); }
+  .pg-pin{ background:transparent; border:none; }
+  .searchrow{ display:flex; gap:8px; margin-top:8px; }
+  .searchrow input{ flex:1; }
+  .searchbtn{ flex:none; width:46px; border:1.5px solid var(--line); border-radius:12px; background:#fff;
+              font-size:16px; cursor:pointer; transition:.15s; }
+  .searchbtn:hover:not(:disabled){ background:var(--surface); }
+  .searchbtn:disabled{ opacity:.6; cursor:default; }
+
+  /* Beneficiary picker */
+  .benflist{ max-height:270px; overflow-y:auto; margin-top:2px; padding-right:3px; }
+  .benflist::-webkit-scrollbar{ width:6px; }
+  .benflist::-webkit-scrollbar-thumb{ background:#c7d5e8; border-radius:6px; }
+  .benfgrp{ font-size:10.5px; font-weight:800; text-transform:uppercase; letter-spacing:.6px; margin:12px 0 6px; }
+  .benfgrp:first-child{ margin-top:2px; }
+  .benf-card{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px;
+              border:1.5px solid var(--line); border-radius:12px; margin-bottom:7px; cursor:pointer;
+              transition:.15s; background:#fff; }
+  .benf-card:hover{ border-color:#c7d5e8; }
+  .benf-card.sel{ border-color:var(--brand); background:#eef5fc; box-shadow:0 0 0 3px rgba(11,87,164,.10); }
+  .benf-name{ font-size:13.5px; font-weight:700; }
+  .benf-sub{ font-size:11px; color:var(--muted); margin-top:2px; }
+  .tierpill{ font-size:10px; font-weight:800; padding:4px 9px; border-radius:20px; flex:none; white-space:nowrap; }
 
   /* Advanced */
   .adv{ font-size:12.5px; color:var(--brand); cursor:pointer; margin:18px 0 4px; font-weight:700; user-select:none; }
@@ -108,26 +151,84 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState } = React;
+const { useState, useEffect, useRef } = React;
 
-// Device/session risk profiles → telemetry bundles
+// ── Preset cities used as quick-jump shortcuts for both "home / frequent
+// location" (set at sign-up) and "payment location" (picked per transaction).
+// You're not limited to these — the map itself is real (Leaflet +
+// OpenStreetMap tiles) and can be clicked anywhere, or searched by address
+// via the free Nominatim geocoder, both of which feed real coordinates into
+// geo_distance_km / is_international. ──
+const CITIES = [
+  { key:"blr", label:"Bengaluru", country:"IN", lat:12.9716, lon:77.5946 },
+  { key:"bom", label:"Mumbai",    country:"IN", lat:19.0760, lon:72.8777 },
+  { key:"del", label:"Delhi",     country:"IN", lat:28.7041, lon:77.1025 },
+  { key:"maa", label:"Chennai",   country:"IN", lat:13.0827, lon:80.2707 },
+  { key:"ccu", label:"Kolkata",   country:"IN", lat:22.5726, lon:88.3639 },
+  { key:"hyd", label:"Hyderabad", country:"IN", lat:17.3850, lon:78.4867 },
+  { key:"pnq", label:"Pune",      country:"IN", lat:18.5204, lon:73.8567 },
+  { key:"jai", label:"Jaipur",    country:"IN", lat:26.9124, lon:75.7873 },
+  { key:"dxb", label:"Dubai",     country:"AE", lat:25.2048, lon:55.2708 },
+  { key:"sin", label:"Singapore", country:"SG", lat:1.3521,  lon:103.8198 },
+  { key:"lon", label:"London",    country:"GB", lat:51.5072, lon:-0.1276 },
+  { key:"nyc", label:"New York",  country:"US", lat:40.7128, lon:-74.0060 },
+];
+function haversineKm(a, b) {
+  const R = 6371, toRad = d => d * Math.PI / 180;
+  const dLat = toRad(b.lat - a.lat), dLon = toRad(b.lon - a.lon);
+  const s = Math.pow(Math.sin(dLat / 2), 2) +
+            Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.pow(Math.sin(dLon / 2), 2);
+  return Math.round(R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s)));
+}
+
+// ── Live geocoding via Nominatim (OpenStreetMap's free geocoder — no API
+// key). Reverse: turn a map click's lat/lon into a place name + ISO country
+// code. Forward: turn a typed address/city into coordinates. Both degrade
+// gracefully (raw coordinates / "not found") if the network call fails. ──
+async function reverseGeocode(lat, lon) {
+  try {
+    const r = await fetch("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&addressdetails=1&lat=" + lat + "&lon=" + lon);
+    const j = await r.json();
+    const a = j.address || {};
+    const city = a.city || a.town || a.village || a.county || a.state_district || a.state || j.name;
+    return { label: city || (lat.toFixed(2) + ", " + lon.toFixed(2)),
+             country: a.country_code ? a.country_code.toUpperCase() : "??" };
+  } catch (e) {
+    return { label: lat.toFixed(2) + ", " + lon.toFixed(2), country: "??" };
+  }
+}
+async function geocodeSearch(query) {
+  try {
+    const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&addressdetails=1&q=" + encodeURIComponent(query));
+    const j = await r.json();
+    if (!j.length) return null;
+    const hit = j[0];
+    const a = hit.address || {};
+    const city = a.city || a.town || a.village || a.state || (hit.display_name || "").split(",")[0];
+    return { lat: parseFloat(hit.lat), lon: parseFloat(hit.lon), label: city,
+             country: a.country_code ? a.country_code.toUpperCase() : "??" };
+  } catch (e) { return null; }
+}
+
+// Device/session risk profiles → telemetry bundles. Location no longer lives
+// here — it comes from the map widget (home vs. payment pin) instead.
 const PROFILES = {
   Safe:        { new_device:false, vpn_detected:false, emulator_detected:false, rooted_device:false,
                  paste_detected:false, failed_otp_count:0, device_trust_score:88, session_duration_sec:40,
-                 typing_speed_anomaly:0.1, geo_distance_km:5, is_international:false },
+                 typing_speed_anomaly:0.1 },
   Suspicious:  { new_device:true, vpn_detected:true, emulator_detected:false, rooted_device:false,
                  paste_detected:false, failed_otp_count:1, device_trust_score:50, session_duration_sec:18,
-                 typing_speed_anomaly:0.4, geo_distance_km:150, is_international:false },
+                 typing_speed_anomaly:0.4 },
   Compromised: { new_device:true, vpn_detected:true, emulator_detected:true, rooted_device:true,
                  paste_detected:true, failed_otp_count:3, device_trust_score:15, session_duration_sec:4,
-                 typing_speed_anomaly:0.9, geo_distance_km:2500, is_international:true },
+                 typing_speed_anomaly:0.9 },
 };
 
-const BENEFICIARIES = [
-  { key:"trusted", name:"Priya Sharma", sub:"HDFC ••1234 · saved payee", id:"BENF-TRUSTED-01", risk:8, isNew:false },
-  { key:"new",     name:"QuickMart Online", sub:"first-time payee", id:null, risk:20, isNew:true },
-  { key:"mule",    name:"Unknown A/C ••9021", sub:"⚠ flagged on fraud ledger", id:"BENF-MULE-001", risk:60, isNew:true },
-];
+const TIER_META = {
+  safe:     { label: "✅ Safe contacts",       color: "#12a150", bg: "#dcf5e8" },
+  moderate: { label: "⚠️ Moderate risk",       color: "#d98a00", bg: "#fdf0d8" },
+  risky:    { label: "🚩 High risk (flagged)", color: "#e5484d", bg: "#fbe0e0" },
+};
 
 const DEC = {
   APPROVE:      { cls:"b-ok",    icon:"✓", title:"Payment Successful", sub:"Your transfer has been completed.", color:"#12a150", bg:"#dcf5e8", tag:"APPROVED" },
@@ -146,32 +247,254 @@ function AdvChk({ label, value, onChange }) {
     <label className="switch"><input type="checkbox" checked={value} onChange={e => onChange(e.target.checked)} />
       <span className="slider"></span></label></div>;
 }
-function AdvText({ label, value, onChange }) {
-  return <div className="arow"><span>{label}</span>
-    <input type="text" value={value} onChange={e => onChange(e.target.value)} /></div>;
+
+// Emoji "teardrop" pin — avoids needing Leaflet's default marker image assets.
+function pinIcon(emoji, color) {
+  return L.divIcon({
+    className: "pg-pin",
+    html: '<div style="width:30px;height:30px;border-radius:50% 50% 50% 0;background:' + color +
+          ';transform:rotate(-45deg);box-shadow:0 2px 8px rgba(0,0,0,.35);border:2px solid #fff;' +
+          'display:flex;align-items:center;justify-content:center;">' +
+          '<span style="transform:rotate(45deg);font-size:14px;">' + emoji + '</span></div>',
+    iconSize: [30, 30], iconAnchor: [15, 30], popupAnchor: [0, -30],
+  });
 }
 
-function Header({ chipOnly }) {
+// A real, live map — Leaflet driving OpenStreetMap tiles. Plots the
+// customer's frequent/home location (🏠) and, if different, the location
+// this particular payment is being made from (📍), joined by a line. Click
+// anywhere on it to drop a pin (reverse-geocoded live via Nominatim); that
+// real distance is exactly what feeds geo_distance_km / is_international
+// into the fraud score. Built with the vanilla Leaflet API (imperative,
+// via refs) since there's no build step here to pull in react-leaflet.
+function LeafletMap({ height, home, payment, pickable, onPick }) {
+  const elRef = useRef(null);
+  const mapRef = useRef(null);
+  const markersRef = useRef({});
+  const lineRef = useRef(null);
+  const onPickRef = useRef(onPick);
+  onPickRef.current = onPick;
+
+  useEffect(() => {
+    const map = L.map(elRef.current, { worldCopyJump: true }).setView([20, 78], 3);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a>',
+    }).addTo(map);
+    mapRef.current = map;
+    map.on("click", e => { if (onPickRef.current) onPickRef.current(e.latlng.lat, e.latlng.lng); });
+    setTimeout(() => map.invalidateSize(), 0);
+    return () => { map.remove(); mapRef.current = null; markersRef.current = {}; };
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (home) {
+      if (!markersRef.current.home) markersRef.current.home = L.marker([home.lat, home.lon], { icon: pinIcon("🏠", "#0b57a4") }).addTo(map);
+      else markersRef.current.home.setLatLng([home.lat, home.lon]);
+      markersRef.current.home.bindTooltip("🏠 " + home.label);
+    }
+    if (payment) {
+      if (!markersRef.current.payment) markersRef.current.payment = L.marker([payment.lat, payment.lon], { icon: pinIcon("📍", "#e5484d") }).addTo(map);
+      else markersRef.current.payment.setLatLng([payment.lat, payment.lon]);
+      markersRef.current.payment.bindTooltip("📍 " + payment.label);
+    } else if (markersRef.current.payment) {
+      map.removeLayer(markersRef.current.payment);
+      delete markersRef.current.payment;
+    }
+    if (lineRef.current) { map.removeLayer(lineRef.current); lineRef.current = null; }
+    if (home && payment) {
+      lineRef.current = L.polyline([[home.lat, home.lon], [payment.lat, payment.lon]],
+        { color: "#0b57a4", weight: 2, dashArray: "6 8", opacity: 0.75 }).addTo(map);
+      map.fitBounds(lineRef.current.getBounds(), { padding: [36, 36], maxZoom: 6 });
+    } else if (home) {
+      map.setView([home.lat, home.lon], Math.max(map.getZoom(), 5));
+    }
+  }, [home && home.lat, home && home.lon, home && home.label,
+      payment && payment.lat, payment && payment.lon, payment && payment.label]);
+
+  return <div ref={elRef} style={{ height: (height || 210) + "px" }} />;
+}
+
+// A search box backed by live Nominatim geocoding — type a city or address,
+// hit search, and the map flies there and drops a pin.
+function LocationSearch({ placeholder, busy, onBusy, onFound }) {
+  const [q, setQ] = useState("");
+  async function go() {
+    if (!q.trim() || busy) return;
+    onBusy(true);
+    const hit = await geocodeSearch(q.trim());
+    onBusy(false);
+    if (hit) onFound(hit); else alert("Couldn't find that place — try a city name.");
+  }
+  return (
+    <div className="searchrow">
+      <input type="text" value={q} onChange={e => setQ(e.target.value)}
+             onKeyDown={e => { if (e.key === "Enter") go(); }}
+             placeholder={placeholder || "Search a city or address…"} />
+      <button type="button" className="searchbtn" onClick={go} disabled={busy}>{busy ? "…" : "🔎"}</button>
+    </div>
+  );
+}
+
+function Header({ chipOnly, user, onLogout }) {
   return (
     <div className="hdr">
       <div className="brandrow">
         <div className="brand"><span className="logo">🏦</span> IOB Pay</div>
-        <span className="chip">🔒 PayGuard</span>
+        <span className="chip">🔒 PaymentGuardian</span>
       </div>
-      {!chipOnly &&
-        <div className="acct">
-          <div><div className="lbl">From account</div><div className="val">Savings ••4821</div></div>
-          <div style={{textAlign:'right'}}><div className="lbl">Balance</div><div className="val">₹1,84,500</div></div>
-        </div>}
+      {!chipOnly && user &&
+        <React.Fragment>
+          <div className="userbar">
+            <span>👤 {user.full_name.split(" ")[0]} · 🏠 {user.home_label}</span>
+            <span className="logout" onClick={onLogout}>Log out</span>
+          </div>
+          <div className="acct">
+            <div><div className="lbl">From account</div><div className="val">Savings ••4821</div></div>
+            <div style={{textAlign:'right'}}><div className="lbl">Balance</div>
+              <div className="val">₹{Number(user.balance != null ? user.balance : 0).toLocaleString('en-IN')}</div></div>
+          </div>
+        </React.Fragment>}
+    </div>
+  );
+}
+
+// ── Sign up (creates the account that every payment will be tied to) / log in.
+// This is a simulation — passwords are hashed server-side but there is no
+// real identity check behind it. The point isn't security, it's making sure
+// each payment in this demo belongs to one consistent customer_id instead of
+// a free-text field, so account age / trust history / home location actually
+// mean something to the fraud engine. ──
+function AuthScreen({ onAuth }) {
+  const [mode, setMode] = useState("signup");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [home, setHome] = useState({ lat: CITIES[0].lat, lon: CITIES[0].lon, label: CITIES[0].label, country: CITIES[0].country });
+  const [geoBusy, setGeoBusy] = useState(false);
+  const [lEmail, setLEmail] = useState("");
+  const [lPassword, setLPassword] = useState("");
+
+  function jumpHomeTo(key) {
+    const c = CITIES.filter(x => x.key === key)[0];
+    if (c) setHome({ lat: c.lat, lon: c.lon, label: c.label, country: c.country });
+  }
+  async function pickHome(lat, lon) {
+    setHome(h => ({ ...h, lat, lon, label: "Locating…" }));
+    setGeoBusy(true);
+    const g = await reverseGeocode(lat, lon);
+    setGeoBusy(false);
+    setHome({ lat, lon, label: g.label, country: g.country });
+  }
+
+  async function doSignup() {
+    setErr(null);
+    if (!fullName.trim() || !email.trim()) { setErr("Enter your name and email."); return; }
+    if (password.length < 4) { setErr("Password must be at least 4 characters."); return; }
+    if (password !== confirm) { setErr("Passwords do not match."); return; }
+    setBusy(true);
+    try {
+      const r = await fetch("/auth/signup", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ full_name: fullName, email: email, phone: phone, password: password,
+          home_label: home.label, home_lat: home.lat, home_lon: home.lon, home_country: home.country }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.detail || "Could not create account");
+      onAuth(j);
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+
+  async function doLogin() {
+    setErr(null);
+    if (!lEmail.trim() || !lPassword) { setErr("Enter your email and password."); return; }
+    setBusy(true);
+    try {
+      const r = await fetch("/auth/login", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ email: lEmail, password: lPassword }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.detail || "Login failed");
+      onAuth(j);
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="phone">
+      <Header chipOnly />
+      <div className="authbody">
+        <div className="tabs">
+          <button className={mode === "signup" ? "on" : ""} onClick={() => { setMode("signup"); setErr(null); }}>Create account</button>
+          <button className={mode === "login" ? "on" : ""} onClick={() => { setMode("login"); setErr(null); }}>Log in</button>
+        </div>
+
+        {mode === "signup" ? (
+          <React.Fragment>
+            <label>Full name</label>
+            <input type="text" value={fullName} onChange={e => setFullName(e.target.value)} placeholder="Your name" />
+            <label>Email</label>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" />
+            <label>Phone (optional)</label>
+            <input type="text" value={phone} onChange={e => setPhone(e.target.value)} placeholder="9876543210" />
+            <label>Password</label>
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="min 4 characters" />
+            <label>Confirm password</label>
+            <input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} />
+
+            <label>Your frequent / home location</label>
+            <div className="hint">PaymentGuardian learns this as your usual location — payments made far
+              from it (or from a different country) look riskier. Search an address, tap the map, or jump
+              to a city.</div>
+            <LocationSearch placeholder="Search your city or address…" busy={geoBusy} onBusy={setGeoBusy}
+                            onFound={hit => setHome(hit)} />
+            <select value="" onChange={e => jumpHomeTo(e.target.value)} style={{marginTop:8}}>
+              <option value="" disabled>Jump to a city…</option>
+              {CITIES.map(c => <option key={c.key} value={c.key}>{c.label} ({c.country})</option>)}
+            </select>
+            <div className="maproot">
+              <LeafletMap height={190} home={home} pickable onPick={pickHome} />
+              <div className="mapmeta">
+                <span>🏠 {geoBusy ? "Locating…" : home.label}</span>
+                <span>{home.lat.toFixed(3)}, {home.lon.toFixed(3)}</span>
+              </div>
+            </div>
+
+            {err && <div className="err">{err}</div>}
+            <button className="pay" onClick={doSignup} disabled={busy}>{busy ? "Creating account…" : "Create account"}</button>
+          </React.Fragment>
+        ) : (
+          <React.Fragment>
+            <label>Email</label>
+            <input type="email" value={lEmail} onChange={e => setLEmail(e.target.value)} placeholder="you@example.com" />
+            <label>Password</label>
+            <input type="password" value={lPassword} onChange={e => setLPassword(e.target.value)} />
+            {err && <div className="err">{err}</div>}
+            <button className="pay" onClick={doLogin} disabled={busy}>{busy ? "Logging in…" : "Log in"}</button>
+          </React.Fragment>
+        )}
+      </div>
+      <div className="note">🔒 Simulation only — never enter a real password here. An account just keeps
+        every payment tied to one identity, so PaymentGuardian can build a real trust history for you
+        instead of scoring anonymous traffic.</div>
     </div>
   );
 }
 
 function App() {
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("iobpay_user") || "null"); } catch (e) { return null; }
+  });
+  const [paymentLoc, setPaymentLoc] = useState(() => user
+    ? { lat: user.home_lat, lon: user.home_lon, label: user.home_label, country: user.home_country }
+    : { lat: CITIES[0].lat, lon: CITIES[0].lon, label: CITIES[0].label, country: CITIES[0].country });
+  const [geoBusy, setGeoBusy] = useState(false);
+  const [beneficiaries, setBeneficiaries] = useState([]);
+  const [selectedBenf, setSelectedBenf] = useState(null);
+  const [paidTo, setPaidTo] = useState("");
   const [amount, setAmount] = useState(2500);
-  const [benef, setBenef] = useState("trusted");
   const [profile, setProfile] = useState("Safe");
-  const [cust, setCust] = useState("IOBPAY-USER-01");
   const [showAdv, setShowAdv] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -180,29 +503,108 @@ function App() {
   const [err, setErr] = useState(null);
   const [simming, setSimming] = useState(false);
   const [simMsg, setSimMsg] = useState(null);
-  const [adv, setAdv] = useState({
-    hour: new Date().getHours(), avg_txn_amount: 20000,
-    beneficiary_risk_score: 8, beneficiary_added_recently: false, account_age_days: 400,
-    shared_device_accounts: 1, beneficiary_id_override: "", ...PROFILES.Safe,
-  });
+  const [adv, setAdv] = useState({ hour: new Date().getHours(), avg_txn_amount: 20000,
+                                    shared_device_accounts: 1, ...PROFILES.Safe });
   const upd = (k, v) => setAdv(a => ({ ...a, [k]: v }));
 
-  const b = BENEFICIARIES.find(x => x.key === benef);
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch("/beneficiaries");
+        const j = await r.json();
+        const list = j.beneficiaries || [];
+        if (cancelled) return;
+        setBeneficiaries(list);
+        const preferred = list.filter(b => b.tier === "safe")[0] || list[0];
+        if (preferred) setSelectedBenf(preferred.beneficiary_id);
+      } catch (e) {}
+    })();
+    // Re-sync the balance from the DB on load/login — it's the source of
+    // truth, so a stale cached copy in localStorage never sticks around.
+    (async () => {
+      try {
+        const rb = await fetch("/wallet/balance/" + user.user_id);
+        if (cancelled || !rb.ok) return;
+        const jb = await rb.json();
+        setUser(u => {
+          const updated = { ...u, balance: jb.balance };
+          localStorage.setItem("iobpay_user", JSON.stringify(updated));
+          return updated;
+        });
+      } catch (e) {}
+    })();
+    return () => { cancelled = true; };
+  }, [user ? user.user_id : null]);
+
+  function handleAuth(u) {
+    localStorage.setItem("iobpay_user", JSON.stringify(u));
+    setUser(u);
+    setPaymentLoc({ lat: u.home_lat, lon: u.home_lon, label: u.home_label, country: u.home_country });
+  }
+  async function debitAndSync(amt) {
+    try {
+      const r = await fetch("/wallet/debit", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: user.user_id, amount: amt }) });
+      if (!r.ok) return;
+      const j = await r.json();
+      setUser(u => {
+        const updated = { ...u, balance: j.balance };
+        localStorage.setItem("iobpay_user", JSON.stringify(updated));
+        return updated;
+      });
+    } catch (e) {}
+  }
+  function logout() {
+    localStorage.removeItem("iobpay_user");
+    setUser(null); setBeneficiaries([]); setSelectedBenf(null); setResult(null); setErr(null);
+  }
+
+  if (!user) return <AuthScreen onAuth={handleAuth} />;
+
+  const homeLoc = { label: user.home_label, lat: user.home_lat, lon: user.home_lon, country: user.home_country };
+  const isSameLoc = Math.abs(paymentLoc.lat - homeLoc.lat) < 0.0005 && Math.abs(paymentLoc.lon - homeLoc.lon) < 0.0005;
+  const distanceKm = isSameLoc ? 0 : haversineKm(homeLoc, paymentLoc);
+  const intl = homeLoc.country !== paymentLoc.country;
+  const benf = beneficiaries.filter(x => x.beneficiary_id === selectedBenf)[0];
+
+  function jumpPaymentTo(key) {
+    if (key === "home") { setPaymentLoc({ ...homeLoc }); return; }
+    const c = CITIES.filter(x => x.key === key)[0];
+    if (c) setPaymentLoc({ lat: c.lat, lon: c.lon, label: c.label, country: c.country });
+  }
+  async function pickPayment(lat, lon) {
+    setPaymentLoc(p => ({ ...p, lat, lon, label: "Locating…" }));
+    setGeoBusy(true);
+    const g = await reverseGeocode(lat, lon);
+    setGeoBusy(false);
+    setPaymentLoc({ lat, lon, label: g.label, country: g.country });
+  }
 
   async function pay() {
-    setErr(null); setLoading(true); setResult(null); setVerified(false); setOtp("");
+    if (!benf) { setErr("Pick someone to pay."); return; }
+    if (Number(amount) > (user.balance != null ? user.balance : 0)) {
+      setErr("Insufficient balance for this payment."); return;
+    }
+    setErr(null); setLoading(true); setResult(null); setVerified(false); setOtp(""); setPaidTo(benf.name);
     const payload = {
-      amount: Number(amount), customer_id: cust, channel: "IOB Pay",
-      beneficiary_id: (adv.beneficiary_id_override || b.id || ("BENF-NEW-" + Math.floor(1000 + Math.random()*9000))),
-      beneficiary_name: adv.beneficiary_id_override ? "Custom payee" : b.name,
-      device_hash: "DEV-IOBPAY-" + cust,
+      amount: Number(amount), customer_id: user.user_id, channel: "IOB Pay",
+      beneficiary_id: benf.beneficiary_id, beneficiary_name: benf.name,
+      beneficiary_risk_score: benf.risk_score, account_age_days: benf.account_age_days,
+      beneficiary_added_recently: !!benf.is_new,
+      device_hash: "DEV-IOBPAY-" + user.user_id,
+      home_label: homeLoc.label, home_lat: homeLoc.lat, home_lon: homeLoc.lon,
+      payment_label: paymentLoc.label, payment_lat: paymentLoc.lat, payment_lon: paymentLoc.lon,
+      geo_distance_km: distanceKm, is_international: intl,
       ...adv,
     };
-    delete payload.beneficiary_id_override;
     try {
       const r = await fetch("/score", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
       if (!r.ok) throw new Error("API " + r.status);
-      setResult(await r.json());
+      const data = await r.json();
+      setResult(data);
+      if (data.decision === "APPROVE") await debitAndSync(Number(amount));
     } catch (e) {
       setErr("Could not reach the fraud engine. Is the API running? (" + e.message + ")");
     } finally { setLoading(false); }
@@ -211,26 +613,37 @@ function App() {
   async function simulate() {
     setSimming(true); setSimMsg(null);
     const pick = a => a[Math.floor(Math.random() * a.length)];
-    const names = ["Amazon IN", "Flipkart", "Swiggy", "Zomato", "BigBasket", "Reliance", "Myntra"];
+    const pool = beneficiaries;
+    const safePool = pool.filter(b => b.tier === "safe");
+    const riskyPool = pool.filter(b => b.tier !== "safe");
     let ok = 0;
     for (let i = 0; i < 10; i++) {
       const fraud = Math.random() > 0.6;
       const prof = fraud ? (Math.random() > 0.5 ? PROFILES.Compromised : PROFILES.Suspicious) : PROFILES.Safe;
-      const toMule = fraud && Math.random() > 0.6;
+      const candidates = fraud ? (riskyPool.length ? riskyPool : pool) : (safePool.length ? safePool : pool);
+      const b = candidates.length ? pick(candidates) : null;
+      const home = pick(CITIES);
+      const away = fraud && Math.random() > 0.5 ? pick(CITIES.filter(c => c.key !== home.key)) : home;
+      const dist = away.key === home.key ? 0 : haversineKm(home, away);
       const payload = {
         amount: fraud ? pick([65000, 120000, 250000, 450000]) : pick([800, 1500, 3000, 6000, 12000]),
         hour: Math.floor(Math.random() * 24), customer_id: "SIM-USER-" + (1 + Math.floor(Math.random() * 4)),
         channel: "IOB Pay",
-        beneficiary_id: toMule ? "BENF-MULE-001" : "BENF-SIM-" + Math.floor(1000 + Math.random() * 9000),
-        beneficiary_name: toMule ? "Unknown A/C ••9021" : pick(names),
+        beneficiary_id: b ? b.beneficiary_id : "BENF-SIM-" + Math.floor(1000 + Math.random() * 9000),
+        beneficiary_name: b ? b.name : "Unknown payee",
+        beneficiary_risk_score: b ? b.risk_score : (fraud ? pick([55, 70, 85]) : pick([8, 15, 20])),
+        account_age_days: b ? b.account_age_days : (fraud ? pick([2, 7, 20]) : pick([120, 365, 700])),
+        beneficiary_added_recently: b ? !!b.is_new : fraud,
         device_hash: "DEV-SIM-" + Math.floor(100 + Math.random() * 900),
-        avg_txn_amount: 20000, beneficiary_risk_score: fraud ? pick([55, 70, 85]) : pick([8, 15, 20]),
-        beneficiary_added_recently: fraud, account_age_days: fraud ? pick([2, 7, 20]) : pick([120, 365, 700]),
+        avg_txn_amount: 20000,
+        home_label: home.label, home_lat: home.lat, home_lon: home.lon,
+        payment_label: away.label, payment_lat: away.lat, payment_lon: away.lon,
+        geo_distance_km: dist, is_international: home.country !== away.country,
         ...prof,
       };
       try { const r = await fetch("/score", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) }); if (r.ok) ok++; } catch (e) {}
     }
-    setSimMsg("Simulated " + ok + " payments — open the analyst dashboard to investigate them.");
+    setSimMsg("Simulated " + ok + " payments (other synthetic customers) — open the analyst dashboard to investigate them.");
     setSimming(false);
   }
 
@@ -251,7 +664,7 @@ function App() {
           <div className={"badge " + view.cls}>{view.icon}</div>
           <div className="r-title">{showSuccess ? "Payment Successful" : view.title}</div>
           <div className="r-amt" style={{color: view.color}}>₹{Number(amount).toLocaleString('en-IN')}</div>
-          <div className="r-sub">to <b>{b.name}</b></div>
+          <div className="r-sub">to <b>{paidTo}</b></div>
           <span className="pill" style={{background: view.bg, color: view.color}}>
             {showSuccess ? "APPROVED" : (DEC[result.decision]||{}).tag} · Risk {result.tti}/100
           </span>
@@ -262,7 +675,8 @@ function App() {
               <label>Enter OTP (any 6 digits — simulated)</label>
               <input className="otp" maxLength="6" value={otp}
                      onChange={e=>setOtp(e.target.value.replace(/\D/g,''))} placeholder="••••••" />
-              <button className="pay" disabled={otp.length<6} onClick={()=>setVerified(true)}>Verify & Pay</button>
+              <button className="pay" disabled={otp.length<6}
+                      onClick={async ()=>{ setVerified(true); await debitAndSync(Number(amount)); }}>Verify & Pay</button>
             </div>}
 
           {result.decision === "BLOCK" &&
@@ -274,7 +688,7 @@ function App() {
           <div className="linkbtn" onClick={reset}>← Make another payment</div>
         </div>
         <div className="note">⚠️ Simulation only — no real money is transferred. This screen sends the
-          transaction details to the PayGuard engine and shows its decision.</div>
+          transaction details to the PaymentGuardian engine and shows its decision.</div>
       </div>
     );
   }
@@ -282,35 +696,74 @@ function App() {
   // ── Payment form ──
   return (
     <div className="phone">
-      <Header />
+      <Header user={user} onLogout={logout} />
       <div className="body">
         <label>Amount</label>
         <div className="amt-wrap"><span className="cur">₹</span>
           <input className="amt" type="number" value={amount} onChange={e=>setAmount(e.target.value)} /></div>
 
         <label>Pay to</label>
-        <select value={benef} onChange={e=>{
-            const k=e.target.value; setBenef(k);
-            const bb=BENEFICIARIES.find(x=>x.key===k);
-            setAdv(a=>({...a, beneficiary_risk_score:bb.risk, beneficiary_added_recently:bb.isNew,
-                        account_age_days:bb.isNew?20:400}));
-          }}>
-          {BENEFICIARIES.map(x=><option key={x.key} value={x.key}>{x.name} — {x.sub}</option>)}
-        </select>
+        <div className="benflist">
+          {["safe","moderate","risky"].map(tier => {
+            const items = beneficiaries.filter(b => b.tier === tier);
+            if (!items.length) return null;
+            const meta = TIER_META[tier];
+            return (
+              <div key={tier}>
+                <div className="benfgrp" style={{color: meta.color}}>{meta.label}</div>
+                {items.map(b => (
+                  <div key={b.beneficiary_id}
+                       className={"benf-card" + (selectedBenf === b.beneficiary_id ? " sel" : "")}
+                       onClick={() => setSelectedBenf(b.beneficiary_id)}>
+                    <div>
+                      <div className="benf-name">{b.name}</div>
+                      <div className="benf-sub">{b.bank_label} · {b.note}</div>
+                    </div>
+                    <span className="tierpill" style={{background: meta.bg, color: meta.color}}>
+                      Risk {Math.round(b.risk_score)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+          {!beneficiaries.length && <div className="hint">Loading contacts…</div>}
+        </div>
 
-        <label>Quick device / session preset</label>
+        <label>Location</label>
+        <div className="hint">Where this payment is being made from — search an address, tap the map,
+          or jump to a preset.</div>
+        <LocationSearch placeholder="Search a place for this payment…" busy={geoBusy} onBusy={setGeoBusy}
+                        onFound={hit => setPaymentLoc(hit)} />
+        <select value="" onChange={e => jumpPaymentTo(e.target.value)} style={{marginTop:8}}>
+          <option value="" disabled>Jump to…</option>
+          <option value="home">🏠 Home ({homeLoc.label})</option>
+          {CITIES.map(c => <option key={c.key} value={c.key}>{c.label} ({c.country})</option>)}
+        </select>
+        <div className="maproot">
+          <LeafletMap height={200} home={homeLoc} payment={isSameLoc ? null : paymentLoc}
+                      pickable onPick={pickPayment} />
+          <div className="mapmeta">
+            <span>🏠 Home: <b>{homeLoc.label}</b></span>
+            <span>📍 {geoBusy ? "Locating…" : paymentLoc.label}</span>
+          </div>
+          <div className="mapmeta">
+            {isSameLoc
+              ? <span>✅ Paying from home</span>
+              : <span>{intl ? "🌍 International · " : "📏 "}<b>{distanceKm} km</b> from home</span>}
+          </div>
+        </div>
+
+        <label style={{marginTop:16}}>Quick device / session preset</label>
         <div className="seg">
           {Object.keys(PROFILES).map(p=>
             <button key={p} className={profile===p?"on":""}
                     onClick={()=>{setProfile(p); setAdv(a=>({...a, ...PROFILES[p]}));}}>{p}</button>)}
         </div>
 
-        <div className="adv" onClick={()=>setShowAdv(!showAdv)}>{showAdv?"▾":"▸"} Advanced — manual controls (all signals)</div>
+        <div className="adv" onClick={()=>setShowAdv(!showAdv)}>{showAdv?"▾":"▸"} Advanced — manual controls (device & session)</div>
         {showAdv &&
           <div className="advbox">
-            <AdvText label="Your customer ID" value={cust} onChange={setCust} />
-            <AdvText label="Custom beneficiary ID" value={adv.beneficiary_id_override} onChange={v=>upd('beneficiary_id_override',v)} />
-
             <div className="advhd">Transaction</div>
             <AdvNum label="Hour of day (0–23)" value={adv.hour} onChange={v=>upd('hour',v)} />
             <AdvNum label="Customer avg spend (₹)" value={adv.avg_txn_amount} onChange={v=>upd('avg_txn_amount',v)} />
@@ -319,31 +772,24 @@ function App() {
             <AdvChk label="New / unknown device" value={adv.new_device} onChange={v=>upd('new_device',v)} />
             <AdvChk label="Rooted / jailbroken" value={adv.rooted_device} onChange={v=>upd('rooted_device',v)} />
             <AdvChk label="Emulator" value={adv.emulator_detected} onChange={v=>upd('emulator_detected',v)} />
-            <AdvNum label="Device trust (0–100)" value={adv.device_trust_score} onChange={v=>upd('device_trust_score',v)} />
-
-            <div className="advhd">Location</div>
             <AdvChk label="VPN / proxy" value={adv.vpn_detected} onChange={v=>upd('vpn_detected',v)} />
-            <AdvChk label="International" value={adv.is_international} onChange={v=>upd('is_international',v)} />
-            <AdvNum label="Distance from last (km)" value={adv.geo_distance_km} onChange={v=>upd('geo_distance_km',v)} />
+            <AdvNum label="Device trust (0–100)" value={adv.device_trust_score} onChange={v=>upd('device_trust_score',v)} />
 
             <div className="advhd">Session</div>
             <AdvNum label="Time on page (s)" value={adv.session_duration_sec} onChange={v=>upd('session_duration_sec',v)} />
             <AdvChk label="Account number pasted" value={adv.paste_detected} onChange={v=>upd('paste_detected',v)} />
             <AdvNum label="Failed OTPs" value={adv.failed_otp_count} onChange={v=>upd('failed_otp_count',v)} />
-            <AdvChk label="New beneficiary" value={adv.beneficiary_added_recently} onChange={v=>upd('beneficiary_added_recently',v)} />
             <AdvNum label="Typing anomaly (0–1)" step="0.1" value={adv.typing_speed_anomaly} onChange={v=>upd('typing_speed_anomaly',v)} />
 
             <div className="advhd">Relationship</div>
             <AdvNum label="Accounts sharing device" value={adv.shared_device_accounts} onChange={v=>upd('shared_device_accounts',v)} />
-            <AdvNum label="Beneficiary risk (0–100)" value={adv.beneficiary_risk_score} onChange={v=>upd('beneficiary_risk_score',v)} />
-            <AdvNum label="Account age (days)" value={adv.account_age_days} onChange={v=>upd('account_age_days',v)} />
 
             <div style={{fontSize:11,color:'#8794a8',marginTop:10}}>
-              The preset buttons and payee dropdown prefill these. Edit any value for a fully custom payment.</div>
+              Who you're paying, and where from, are set above — this panel is just device & session signals.</div>
           </div>}
 
         {err && <div className="err">{err}</div>}
-        <button className="pay" onClick={pay} disabled={loading || simming}>
+        <button className="pay" onClick={pay} disabled={loading || simming || !benf}>
           {loading ? <span><span className="spin"></span>Checking security…</span> : "Pay ₹" + Number(amount).toLocaleString('en-IN')}
         </button>
         <button className="sim" onClick={simulate} disabled={loading || simming}>
