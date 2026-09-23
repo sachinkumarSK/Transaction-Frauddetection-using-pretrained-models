@@ -395,7 +395,11 @@ for name in ("Kaggle-only baseline", "Full (production set)"):
 SEEDS = (42, 7, 2024)
 RESULTS["H_seed_stability"] = {}
 for kind in (LGB_PROD, LGB_STABLE, "XGBoost"):
-    runs = [run(KAGGLE_FEATS, kind=kind, seed=s) for s in SEEDS]
+    try:
+        runs = [run(KAGGLE_FEATS, kind=kind, seed=s) for s in SEEDS]
+    except ImportError:
+        print(f"      {kind}: not installed, skipped")
+        continue
     agg = {}
     for k in ("roc_auc", "pr_auc", "recall_at_0.1pct_fpr"):
         v = np.array([r_[k] for r_ in runs])

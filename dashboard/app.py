@@ -15,7 +15,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 
-API_URL = os.environ.get("PAYMENTGUARDIAN_API", "http://localhost:8000")
+# 127.0.0.1, not "localhost": on Windows each localhost request first waits ~2 s
+# for an IPv6 attempt (the API only listens on IPv4), which stalls every panel.
+API_URL = os.environ.get("PAYMENTGUARDIAN_API", "http://127.0.0.1:8000")
 
 st.set_page_config(page_title="PaymentGuardian — Analyst Console", page_icon="🛡️",
                    layout="wide", initial_sidebar_state="expanded")

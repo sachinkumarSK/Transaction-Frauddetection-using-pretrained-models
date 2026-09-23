@@ -29,6 +29,9 @@ Fine-tuning approach:
 """
 
 import os, sys, time, warnings, joblib
+# LightGBM must be imported before scikit-learn: on Windows the reverse order
+# loads a conflicting OpenMP runtime and LightGBM crashes with an access violation.
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -43,7 +46,6 @@ from sklearn.metrics import (
     precision_recall_curve, average_precision_score, f1_score,
     make_scorer
 )
-import lightgbm as lgb
 
 warnings.filterwarnings("ignore")
 
@@ -194,7 +196,8 @@ grid_search = GridSearchCV(
     param_grid,
     scoring=f1_scorer,
     cv=cv,
-    n_jobs=-1,
+    n_jobs=1,         # sequential: LightGBM already uses every core per fit, and
+                      # parallel workers re-import sklearn first and crash (see above)
     verbose=0,
     refit=False       # we'll refit on full data manually
 )
