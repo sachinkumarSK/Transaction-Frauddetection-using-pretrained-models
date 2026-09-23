@@ -22,6 +22,9 @@
 > out of scope; improvements may only make it **more rigorous, more honest,
 > or better presented**.
 
+**Quick start:** `pip install -r requirements.txt`, then `python run.py`. It starts
+everything and opens IOB Pay and the analyst dashboard in your browser (details in §18).
+
 This README explains **everything** — the idea, the data, the models, every
 feature, the database, the "blockchain", every API, and the whole user interface —
 in plain language, so you can understand and present it confidently.
@@ -159,6 +162,7 @@ on restart.
 
 ```
 fraud-demo/
+├── run.py                        ← One-command launcher: python run.py (see §18)
 ├── data/
 │   ├── creditcard.csv            ← Kaggle base dataset (284,807 payments)
 │   ├── generate_synthetic.py     ← Adds 25+ behavioural features → enriched CSV
@@ -651,33 +655,68 @@ Every payment is scored, stored, and then appears in the analyst dashboard (clic
 
 ## 18. How to run it
 
-```powershell
-# 1) Install dependencies
-cd d:\demo\fraud-demo
-pip install -r requirements.txt
+**One command, one terminal.** From the project folder:
 
-# 2) (only if the .pkl models are missing) regenerate data + retrain
+```powershell
+pip install -r requirements.txt     # first time only (run.py can also offer to do it)
+python run.py                       # starts the API + IOB Pay + dashboard, opens the browser
+```
+
+`run.py` first checks Python, the packages, the trained models and the ports. Then
+it starts the API (which also serves IOB Pay) and the analyst dashboard, shows
+both logs in the same terminal, and opens IOB Pay and the dashboard in your
+browser. **Press Ctrl+C once to stop everything.**
+
+| Command | What it does |
+|---|---|
+| `python run.py` | Start everything and open the browser |
+| `python run.py check` | Only check Python, packages, data, models and ports |
+| `python run.py train` | Build the enriched dataset if it is missing, then retrain the models (`--force` also rebuilds the dataset) |
+| `python run.py evaluate` | Reproduce the §12b evaluation (`--quick`: ~2 min instead of ~10) |
+| `python run.py api` / `python run.py dashboard` | Start only one part |
+| `python run.py reset` | Delete the demo database for a fresh demo (asks first, and refuses while the API is running) |
+
+Options: `--no-browser`, `--api-port 8010`, `--dashboard-port 8600`, `--yes` (answer
+yes to every question), `--verbose` (show every API request). `python run.py --help`
+lists them all.
+
+**Good to know**
+- **Missing models?** `run.py` offers to train them. This needs `data/creditcard.csv`
+  from [Kaggle](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud). Without the
+  models, the API still runs, with a simpler scoring mode.
+- **Busy port?** The next free port is used automatically. If PaymentGuardian's API is
+  already running (in another terminal, say), it is reused instead of started twice.
+- **Faster dashboard:** the dashboard calls the API at `127.0.0.1` rather than
+  `localhost`. On Windows, every `localhost` request first waited about 2 s for an
+  IPv6 attempt (measured on the development laptop: 2.05 s vs 0.005 s per request).
+
+<details>
+<summary>Manual start (what <code>run.py</code> does for you)</summary>
+
+```powershell
+# (only if the .pkl models are missing) regenerate data + retrain
 python data/generate_synthetic.py
 python models/train_pipeline.py
 
-# 2b) (optional) reproduce the evaluation in §12b — ~1-2 min with --quick
-python models/evaluate.py --quick      # or without --quick for the full dataset
+# (optional) reproduce the evaluation in §12b
+python models/evaluate.py --quick
 
-# 3) Terminal 1 — backend (also serves the IOB Pay app)
-cd d:\demo\fraud-demo\api
+# Terminal 1 — backend (also serves the IOB Pay app)
+cd api
 python -m uvicorn main:app --reload --port 8000       # docs: http://localhost:8000/docs
 
-# 4) Terminal 2 — analyst dashboard
-cd d:\demo\fraud-demo
+# Terminal 2 — analyst dashboard (from the project folder)
 python -m streamlit run dashboard/app.py              # http://localhost:8501
 ```
-Start the backend **first**. The models are already trained (`.pkl` files present),
-so step 2 is optional. The SQLite database is created automatically.
+Start the backend **first**. The SQLite database is created automatically.
+</details>
 
 ---
 
 ## 19. Demo script
 
+0. Run `python run.py` (for an empty system, run `python run.py reset` first).
+   IOB Pay and the dashboard open in the browser.
 1. Open **IOB Pay** (http://localhost:8000/pay) and click **⚡ Simulate 10 random
    payments** to populate the system.
 2. Make a **single payment** to a trusted receiver → **Approved**; then to
@@ -688,7 +727,8 @@ so step 2 is optional. The SQLite database is created automatically.
    (download it). Do the same for an Approved one to contrast.
 5. Use the **Filter by result** dropdown to jump straight to Blocked payments.
 6. Show the **fraud reputation ledger** — the shared memory that caught the mule.
-7. **Restart the API** → refresh the dashboard → all history is still there (SQLite).
+7. **Restart**: Ctrl+C, then `python run.py` again → refresh the dashboard → all
+   history is still there (SQLite).
 
 ---
 
@@ -703,12 +743,13 @@ they are. Tasks only make the project **more rigorous, more honest, or better pr
 |---|---|---|---|---|
 | **Phase 1 — Rigour (grade-critical)** |||||
 | T1 | **Evaluation & leakage audit** — Kaggle-only baseline, ablation, temporal split, model comparison, cost metric, calibration (`models/evaluate.py`) | Examiners ask "what did the enrichment add?" and "is it leaking?" | Read-only: no `.pkl` model, API or UI changes | **Done** — see §12b |
-| T2 | **Make the synthetic data realistic** — regenerate `enriched_fraud_data.csv` with overlapping fraud/legit distributions (target: no synthetic feature stronger on its own than the best real one, V14 at 0.949), retrain **without `is_unbalance`** (unstable on real features, §12b finding 4), re-run T1 | T1 shows the synthetic features give away the label | Same features, same models, same TTI — only data realism and one training setting change | Next |
+| T2 | **Make the synthetic data realistic** — regenerate `enriched_fraud_data.csv` with overlapping fraud/legit distributions (target: no synthetic feature stronger on its own than the best real one, V14 at 0.949), retrain **without `is_unbalance`** (unstable on real features, §12b finding 4), re-run T1. Retraining also clears the scikit-learn version warnings the API prints at start-up (the models were pickled with 1.7.0; this machine has 1.4.1) | T1 shows the synthetic features give away the label | Same features, same models, same TTI — only data realism and one training setting change | Next |
 | T3 | **Evaluate the TTI itself** — score the test set through the 6-check TTI, justify the weights and the 35/70 cut-offs with a sensitivity analysis (or learn the weights with logistic regression) | The TTI makes the decision, but only LightGBM is evaluated today | Same six checks and three decisions; only weights/thresholds get evidence | To do |
 | T4 | **Tamper-evident ledger** — chain each entry to the previous hash (`prev_hash`) and add `GET /ledger/verify`; or rename "blockchain" to "Fraud Intelligence Ledger" everywhere | Calling a hash list "blockchain" hurts credibility | Same shared fraud memory, now verifiable | To do |
 | **Phase 2 — Hygiene** |||||
-| T5 | **Repo clean-up** — delete the stray `{models,api,dashboard,data}` folder, untrack `__pycache__/`, remove the duplicate `xgb_model.pkl` and `train.py`, drop the stale `payguard.db`, use one project name | First impression of the repository | No behaviour change | To do |
+| T5 | **Repo clean-up** — delete the stray `{models,api,dashboard,data}` folder, untrack `__pycache__/`, remove `train.py` and the `xgb_model.pkl` compat alias (with the API's legacy fallback that loads it), drop the stale `payguard.db`, use one project name | First impression of the repository | No behaviour change | To do |
 | T6 | **Automated tests** (pytest) — `/score` returns a decision, a known mule is blocked, the feedback loop blocks the second payment, state survives a restart | Proves the core claims automatically | Tests the goal, changes nothing | To do |
+| T14 | **One-command launcher** — `python run.py` checks the setup, trains if needed, starts the API + IOB Pay + dashboard, opens the browser, and Ctrl+C stops everything. Also: the dashboard calls the API via `127.0.0.1` (about 2 s faster per request on Windows), and `train_pipeline.py` no longer crashes on Windows (LightGBM/scikit-learn import order) | Replaces the three-terminal setup *(added on request)* | No behaviour change: the same programs, started for you | **Done** |
 | **Phase 3 — Presentation** |||||
 | T7 | **One visual identity** — shared palette, typography and an icon set (instead of emojis) across the dashboard and IOB Pay | Both apps currently look like different products | Visual only | To do |
 | T8 | **Dashboard** — tabs (Live feed · Investigation · Model performance · Ledger), TTI waterfall, SHAP bar chart, a Model-performance tab that reads `models/reports/evaluation_results.json` | Shows the analyst *why*, and shows the examiner the results | Same data, better views | To do |
@@ -716,7 +757,7 @@ they are. Tasks only make the project **more rigorous, more honest, or better pr
 | **Phase 4 — Depth (only if time allows)** |||||
 | T10 | **Analyst feedback** — "Confirmed fraud" / "False positive" buttons that update the ledger and collect labels for retraining | Human-in-the-loop version of the existing feedback loop | Strengthens "learning from every confirmed fraud" | Optional |
 | T11 | **Mule-network signal** — sender→receiver graph (NetworkX): many unrelated senders, fast in/out | Mule accounts are in the problem statement | Feeds the existing *Beneficiary Reputation* check — no 7th check | Optional |
-| T12 | **Ops evidence** — latency benchmark (p50/p95 for `/score`), feature-drift monitor (PSI), `docker-compose.yml` | Backs the "real-time" claim; one-command start | No behaviour change | Optional |
+| T12 | **Ops evidence** — latency benchmark (p50/p95 for `/score`), feature-drift monitor (PSI), `docker-compose.yml` | Backs the "real-time" claim; containerised deployment | No behaviour change | Optional |
 | **Phase 5 — Report** |||||
 | T13 | **Write-up** — README trimmed to an overview (detail moves to `docs/`), a Limitations section, a 2-minute demo video | What the examiner reads first | Documentation only | To do |
 
